@@ -36,7 +36,7 @@ test.describe('Smoke: login flow', () => {
     await page.goto('/login')
     await expect(page.getByTestId('login-form')).toBeVisible()
 
-    test.skip(deployMode === 'hosted' && !inviteCode, 'Hosted login requires INVITE_CODE (set env or repo-root .env).')
+    test.skip(deployMode === 'hosted' && !inviteCode, 'Hosted login requires HOSTED_INVITE_CODES or E2E_INVITE_CODE.')
 
     await submitLoginForm(page, { scope: 'smoke-login' })
 

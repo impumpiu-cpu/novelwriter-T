@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext } from '@playwright/test'
 import { authHeaders, blockExternalNoise, createApiSession, ensureLoggedIn } from '../fixtures/api-helpers'
+import { waitForInitialNovelReady } from '../fixtures/novel-ready'
 
 const API = 'http://localhost:8000'
 const RUN = Math.random().toString(36).slice(2, 6)
@@ -46,8 +47,11 @@ test.beforeEach(async ({ page }) => {
 })
 
 test('import worldpack from onboarding dialog populates world model', async ({ page }) => {
+  test.slow()
+  test.setTimeout(180_000)
+
   await page.goto(`/novel/${novelId}`)
-  await expect(page.getByTestId('world-onboarding')).toBeVisible({ timeout: 15_000 })
+  await waitForInitialNovelReady(page, novelId, { requireOnboarding: true })
 
   // Open the world generation / import dialog.
   await page.getByTestId('world-onboarding-generate').click()

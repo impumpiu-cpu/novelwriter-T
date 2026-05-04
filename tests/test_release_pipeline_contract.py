@@ -3,6 +3,9 @@ import re
 import subprocess
 import sys
 import tomllib
+import json
+
+from packaging.version import Version
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,10 +49,14 @@ def test_internal_release_pipeline_files_stay_out_of_public_snapshot():
     excluded = _read(".github/public-mirror-exclude.txt")
 
     assert ".github/workflows/deploy-hosted.yml" in excluded
+    assert ".github/workflows/deploy-hosted-beta.yml" in excluded
     assert ".github/workflows/release-tag.yml" in excluded
     assert ".github/workflows/mirror-public.yml" in excluded
     assert ".github/workflows/docker-publish.yml" in excluded
+    assert ".codex" in excluded
+    assert "competition.md" in excluded
     assert "scripts/deploy_hosted.sh" in excluded
+    assert "scripts/loadtest/" in excluded
 
 
 def test_hosted_deploy_script_keeps_healthcheck_and_metadata_contract():
@@ -57,18 +64,94 @@ def test_hosted_deploy_script_keeps_healthcheck_and_metadata_contract():
     uv_version = _read(".uv-version").strip()
 
     assert "http://localhost:8000/api/health" in script
+    assert "http://localhost:8000/api/health/access" in script
     assert "NOVWR_HEALTHCHECK_RETRIES" in script
+    assert "last-access-health.json" in script
     assert "last-success.env" in script
     assert "current-sha.txt" in script
     assert "systemctl restart novwr" in script
+    assert "systemctl restart \"$HOSTED_WORKER_UNIT_NAME\"" in script
+    assert "systemctl enable --now \"$HOSTED_WORKER_UNIT_NAME\"" in script
+    assert "systemctl daemon-reload" in script
     assert 'UV_VERSION_FILE="${NOVWR_UV_VERSION_FILE:-$ROOT_DIR/.uv-version}"' in script
     assert f'https://astral.sh/uv/{uv_version}/install.sh' not in script
     assert 'https://astral.sh/uv/${uv_version}/install.sh' in script
     assert "scripts/setup_python_env.sh" in script
+    assert "--group hosted-proxy" in script
+    assert "scripts/build_state_proto_rust.sh" in script
     assert "--no-dev" in script
+    assert "upgrade_runtime_database_schema" in script
+    assert "app.selfhost_db_bootstrap" in script
+    assert 'Target ref does not contain alembic.ini.' in script
     assert "astral.sh/uv/install.sh" not in script
     assert "requirements.txt" not in script
     assert "resolve_uv_version" in script
+    assert "build_state_proto_extension" in script
+    assert "verify_state_proto_extension" in script
+    assert "https://sh.rustup.rs" in script
+    assert 'DEPLOY_REQUIRE_ORIGIN_MASTER="${NOVWR_DEPLOY_REQUIRE_ORIGIN_MASTER:-true}"' in script
+    assert 'DEPLOY_GIT_FETCH_SCOPE="${NOVWR_DEPLOY_GIT_FETCH_SCOPE:-master}"' in script
+    assert 'DEPLOY_TRACK="${NOVWR_DEPLOY_TRACK:-production}"' in script
+    assert 'DEPLOY_BOOTSTRAPPED="${NOVWR_DEPLOY_BOOTSTRAPPED:-false}"' in script
+    assert 'DEPLOY_APP_USER="${NOVWR_DEPLOY_APP_USER:-$(id -un)}"' in script
+    assert 'HOSTED_WORKER_TEMPLATE="${NOVWR_HOSTED_WORKER_TEMPLATE:-$ROOT_DIR/deploy/hosted/novwr-worker.service}"' in script
+    assert 'HOSTED_WORKER_UNIT_NAME="${NOVWR_HOSTED_WORKER_UNIT_NAME:-novwr-worker.service}"' in script
+    assert 'HOSTED_NGINX_TEMPLATE="${NOVWR_HOSTED_NGINX_TEMPLATE:-$ROOT_DIR/deploy/hosted/novwr.nginx.site}"' in script
+    assert 'HOSTED_NGINX_SITE_NAME="${NOVWR_HOSTED_NGINX_SITE_NAME:-novwr}"' in script
+    assert 'HOSTED_SERVER_NAMES="${NOVWR_HOSTED_SERVER_NAMES:?NOVWR_HOSTED_SERVER_NAMES is required}"' in script
+    assert "_novwr_state_proto" in script
+    assert "NOVWR_DEPLOY_TRACK=" in script
+    assert "install_hosted_nginx_site" in script
+    assert "render_hosted_nginx_site" in script
+    assert "sudo nginx -t" in script
+    assert "sudo systemctl reload nginx" in script
+    assert 'sudo rm -f "$HOSTED_NGINX_ENABLED_DIR/default"' in script
+    assert 'export NOVWR_DEPLOY_BOOTSTRAPPED=true' in script
+    assert 'export NOVWR_PREVIOUS_SHA="$previous_sha"' in script
+    assert 'exec bash "$ROOT_DIR/scripts/deploy_hosted.sh"' in script
+
+
+def test_hosted_nginx_site_template_blocks_sensitive_path_probes():
+    site = _read("deploy/hosted/novwr.nginx.site")
+
+    assert "server_name __NOVWR_SERVER_NAMES__;" in site
+    assert "ssl_certificate __NOVWR_SSL_CERTIFICATE__;" in site
+    assert "ssl_certificate_key __NOVWR_SSL_CERTIFICATE_KEY__;" in site
+    assert "map $uri $novwr_probe_class {" in site
+    assert 'log_format novwr_probe ' in site
+    assert 'probe=1 probe_class=$novwr_probe_class host="$host" rt=$request_time' in site
+    assert "access_log /var/log/nginx/novwr.access.log combined if=$novwr_log_main;" in site
+    assert "access_log /var/log/nginx/novwr-probes.access.log novwr_probe if=$novwr_probe_request;" in site
+    assert r"location ~ /\.(?!well-known(?:/|$))" in site
+    assert r"location ~* ^/(?:Dockerfile(?:\.[^/]+)?|docker-compose(?:\.[^/]+)?\.ya?ml|compose(?:\.[^/]+)?\.ya?ml)$" in site
+    assert r"location ~* ^/(?:wp-admin|wp-content|wp-includes|cgi-bin|vendor/phpunit)(?:/|$)" in site
+    assert r"location ~* ^/(?:wp-login\.php|xmlrpc\.php|phpinfo\.php|phpunit(?:\.xml(?:\.dist)?)?|server-status|web\.config|settings\.php|config(?:\.php|\.json))$" in site
+    assert "return 404;" in site
+
+
+def test_hosted_worker_unit_template_uses_runtime_placeholders():
+    unit = _read("deploy/hosted/novwr-worker.service")
+
+    assert "User=__NOVWR_APP_USER__" in unit
+    assert "WorkingDirectory=__NOVWR_ROOT_DIR__" in unit
+    assert "EnvironmentFile=-__NOVWR_ROOT_DIR__/.env" in unit
+    assert "ExecStart=__NOVWR_ROOT_DIR__/.venv/bin/python -m app.workers.hosted_jobs" in unit
+    assert "/home/omega/novwr" not in unit
+
+
+def test_state_proto_ensure_script_keeps_runtime_preflight_and_auto_build_contract():
+    ensure_script = _read("scripts/ensure_state_proto_extension.sh")
+    uv_run = _read("scripts/uv_run.sh")
+
+    assert "_novwr_state_proto" in ensure_script
+    assert "build_state_proto_rust.sh" in ensure_script
+    assert "--check-only" in ensure_script
+    assert "cargo" in ensure_script
+    assert "rustc" in ensure_script
+    assert "NOVWR_SKIP_STATE_PROTO_ENSURE" in uv_run
+    assert "should_ensure_state_proto" in uv_run
+    assert 'python|pytest|uvicorn' in uv_run
+    assert '"$ROOT_DIR/scripts/ensure_state_proto_extension.sh" --quiet' in uv_run
 
 
 def test_python_environment_bootstrap_is_uv_lock_driven():
@@ -79,14 +162,42 @@ def test_python_environment_bootstrap_is_uv_lock_driven():
 
     assert "uv venv" in setup_script
     assert "uv sync" in setup_script
+    assert "--group <name>" in setup_script
+    assert "--skip-state-proto" in setup_script
+    assert 'SYNC_GROUPS+=("$2")' in setup_script
+    assert 'ENSURE_STATE_PROTO=true' in setup_script
+    assert '"$ROOT_DIR/scripts/ensure_state_proto_extension.sh"' in setup_script
     assert "--frozen" in setup_script
     assert "--no-install-project" in setup_script
     assert "[project]" in pyproject
     assert "[dependency-groups]" in pyproject
     assert 'requires-python = ">=3.13,<3.14"' in pyproject
     assert pyproject_data["project"]["scripts"]["novwr"] == "app.cli:main"
+    assert pyproject_data["dependency-groups"]["hosted-proxy"] == [
+        "aiohttp>=3.13.5",
+        "cryptography>=46.0.6",
+        "litellm[proxy,google]==1.82.0",
+    ]
     assert pyproject_data["tool"]["uv"]["package"] is True
     assert pyproject_data["tool"]["uv"]["required-version"] == f"=={uv_version}"
+    assert pyproject_data["tool"]["setuptools"]["package-data"]["app.core.indexing"] == [
+        "data/*.txt",
+        "data/*.tsv",
+    ]
+
+
+def test_uv_lock_keeps_audited_security_floors_for_proxy_and_dev_tooling():
+    lock = _read("uv.lock")
+
+    def _locked_version(name: str) -> Version:
+        pattern = rf'\[\[package\]\]\nname = "{re.escape(name)}"\nversion = "([^"]+)"'
+        match = re.search(pattern, lock)
+        assert match, f"missing {name} in uv.lock"
+        return Version(match.group(1))
+
+    assert _locked_version("aiohttp") >= Version("3.13.5")
+    assert _locked_version("cryptography") >= Version("46.0.6")
+    assert _locked_version("pygments") >= Version("2.20.0")
 
 
 def test_uv_version_generated_targets_are_in_sync():
@@ -109,6 +220,9 @@ def test_dockerfile_allows_frontend_build_mode_overrides():
     assert 'VITE_DEPLOY_MODE="$VITE_DEPLOY_MODE"' in dockerfile
     assert "COPY .uv-version ./" in dockerfile
     assert 'env UV_UNMANAGED_INSTALL="/uv-bin" sh' in dockerfile
+    assert "COPY scripts/setup_python_env.sh scripts/ensure_state_proto_extension.sh scripts/build_state_proto_rust.sh ./scripts/" in dockerfile
+    assert "COPY app/core/indexing/data/ app/core/indexing/data/" in dockerfile
+    assert "scripts/setup_python_env.sh --no-dev --skip-state-proto" in dockerfile
     assert "--mount=type=cache,target=/root/.cache/uv" in dockerfile
     assert "COPY data/demo/ data/demo/" in dockerfile
     assert "COPY data/worldpacks/ data/worldpacks/" in dockerfile
@@ -147,10 +261,42 @@ def test_ci_workflow_uses_uv_for_backend_jobs():
 
     assert "astral-sh/setup-uv@v7" in workflow
     assert "version-file: pyproject.toml" in workflow
-    assert "./scripts/setup_python_env.sh" in workflow
+    assert "./scripts/setup_python_env.sh --skip-state-proto" in workflow
     assert "./scripts/uv_run.sh pytest tests/" in workflow
     assert "pip install -r requirements.txt" not in workflow
     assert "uses: ./.github/workflows/ci-selfhost-smoke.yml" in workflow
+
+
+def test_frontend_dependency_installation_stays_lockfile_driven_and_audited():
+    package = json.loads(_read("web/package.json"))
+    readme = _read("README.md")
+
+    assert "npm ci" in readme
+    assert "npm install" not in readme
+    assert package["overrides"] == {
+        "ajv": "6.14.0",
+        "flatted": "3.4.2",
+        "undici": "7.24.7",
+        "rollup": "4.60.1",
+        "picomatch@2.3.1": "2.3.2",
+        "picomatch@4.0.3": "4.0.4",
+        "minimatch@3.1.2": "3.1.5",
+        "minimatch@9.0.5": "9.0.9",
+        "brace-expansion@1.1.12": "1.1.13",
+        "brace-expansion@2.0.2": "2.0.3",
+    }
+
+
+def test_loadtest_bootstrap_uses_locked_hosted_proxy_group():
+    script = _read("scripts/loadtest/bootstrap_target_vm.sh")
+
+    assert 'scripts/setup_python_env.sh" --no-dev --group hosted-proxy --skip-state-proto' in script
+    assert "bootstrap_locked_hosted_proxy_env" in script
+    assert "--group hosted-proxy" in script
+    assert "--frozen" in script
+    assert "uv pip install --python" not in script
+    assert "litellm[proxy,google]" not in script
+    assert "requires a lockfile-defined hosted-proxy dependency group" in script
 
 
 def test_selfhost_smoke_workflow_gates_pr_installer_and_compose_paths():
@@ -182,8 +328,11 @@ def test_selfhost_smoke_script_covers_wheel_installer_and_compose_flows():
 
 def test_playwright_integration_backend_server_uses_uv_wrapper():
     config = _read("web/playwright.config.ts")
+    script = _read("scripts/run_playwright_integration_backend.sh")
 
-    assert "./scripts/uv_run.sh uvicorn app.main:app --port 8000" in config
+    assert "./scripts/run_playwright_integration_backend.sh" in config
+    assert '"$ROOT_DIR/scripts/uv_run.sh" python -m app.workers.hosted_jobs &' in script
+    assert 'exec "$ROOT_DIR/scripts/uv_run.sh" uvicorn app.main:app --port 8000' in script
 
 
 def test_install_script_bootstraps_novwr_cli_and_runs_init_then_run():
@@ -233,10 +382,27 @@ def test_docker_publish_workflow_gates_latest_on_master_ci_success():
 def test_hosted_deploy_workflow_bootstraps_script_from_origin_master_for_rollbacks():
     workflow = _read(".github/workflows/deploy-hosted.yml")
 
-    assert "git show origin/master:scripts/deploy_hosted.sh" in workflow
+    assert 'remote_script_ref="origin/master"' in workflow
+    assert "git show %q:scripts/deploy_hosted.sh" in workflow
     assert "bash .deploy/deploy_hosted.sh" in workflow
     assert (
         "git fetch origin refs/heads/master:refs/remotes/origin/master --tags --force"
         in workflow
     )
+    assert "require_origin_master:" in workflow
+    assert "deploy_git_fetch_scope:" in workflow
+    assert "deploy_track:" in workflow
+    assert 'NOVWR_DEPLOY_REQUIRE_ORIGIN_MASTER=%q' in workflow
+    assert 'NOVWR_DEPLOY_GIT_FETCH_SCOPE=%q' in workflow
+    assert 'NOVWR_DEPLOY_TRACK=%q' in workflow
     assert "git checkout --detach %q && NOVWR_PREVIOUS_SHA" not in workflow
+
+
+def test_hosted_beta_deploy_workflow_reuses_production_deploy_with_beta_overrides():
+    workflow = _read(".github/workflows/deploy-hosted-beta.yml")
+
+    assert "uses: ./.github/workflows/deploy-hosted.yml" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "require_origin_master: false" in workflow
+    assert "deploy_git_fetch_scope: all" in workflow
+    assert "deploy_track: beta" in workflow

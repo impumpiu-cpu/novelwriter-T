@@ -19,6 +19,7 @@ def client():
 @patch("app.core.ai_client.get_settings")
 def test_get_config_returns_openai_settings(mock_settings):
     s = MagicMock(
+        deploy_mode="selfhost",
         openai_base_url="https://api.openai.com/v1",
         openai_api_key="sk-test",
         openai_model="gpt-4o",
@@ -34,6 +35,7 @@ def test_get_config_returns_openai_settings(mock_settings):
 @patch("app.core.ai_client.get_settings")
 def test_get_config_strips_chat_completions(mock_settings):
     s = MagicMock(
+        deploy_mode="selfhost",
         openai_base_url="https://example.com/v1/chat/completions",
         openai_api_key="sk-test",
         openai_model="gpt-4o",
@@ -42,6 +44,25 @@ def test_get_config_strips_chat_completions(mock_settings):
     c = AIClient()
     cfg = c._get_config()
     assert cfg["base_url"] == "https://example.com/v1"
+
+
+@patch("app.core.ai_client.get_settings")
+def test_get_config_prefers_hosted_llm_settings_in_hosted_mode(mock_settings):
+    s = MagicMock(
+        deploy_mode="hosted",
+        hosted_llm_base_url="https://gateway.example.com/v1/chat/completions",
+        hosted_llm_api_key="hosted-key",
+        hosted_llm_model="hosted-model",
+        openai_base_url="https://api.openai.com/v1",
+        openai_api_key="sk-test",
+        openai_model="gpt-4o",
+    )
+    mock_settings.return_value = s
+    c = AIClient()
+    cfg = c._get_config()
+    assert cfg["base_url"] == "https://gateway.example.com/v1"
+    assert cfg["api_key"] == "hosted-key"
+    assert cfg["model"] == "hosted-model"
 
 
 @patch("app.core.ai_client.get_settings")
@@ -74,6 +95,7 @@ def test_estimate_cost_preserves_default_input_pricing_when_only_output_override
 @patch("app.core.ai_client.get_settings")
 def test_resolve_config_uses_per_request_when_all_provided(mock_settings):
     s = MagicMock(
+        deploy_mode="selfhost",
         openai_base_url="https://env.example.com/v1",
         openai_api_key="env-key",
         openai_model="env-model",
@@ -93,6 +115,7 @@ def test_resolve_config_uses_per_request_when_all_provided(mock_settings):
 @patch("app.core.ai_client.get_settings")
 def test_resolve_config_falls_back_when_partial(mock_settings):
     s = MagicMock(
+        deploy_mode="selfhost",
         openai_base_url="https://env.example.com/v1",
         openai_api_key="env-key",
         openai_model="env-model",
@@ -107,6 +130,7 @@ def test_resolve_config_falls_back_when_partial(mock_settings):
 @patch("app.core.ai_client.get_settings")
 def test_resolve_config_strips_chat_completions_from_per_request(mock_settings):
     s = MagicMock(
+        deploy_mode="selfhost",
         openai_base_url="https://env.example.com/v1",
         openai_api_key="env-key",
         openai_model="env-model",

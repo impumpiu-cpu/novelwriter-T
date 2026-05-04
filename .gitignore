@@ -41,6 +41,10 @@ web/dist/
 *.tsbuildinfo
 web/vite.config.d.ts
 
+# Rust
+rust/**/target/
+.maturin/
+
 # Data
 *.db
 *.db-wal
@@ -73,6 +77,7 @@ logs/
 # Reports/Drafts
 reports/
 drafts/
+competition.md
 
 # Testing
 .pytest_cache/
@@ -82,7 +87,8 @@ htmlcov/
 .ruff_cache/
 web/playwright-report/
 web/test-results/
-
+.playwright-mcp/
+artifacts/playwright_ui_verify/
 # OS
 .DS_Store
 Thumbs.db
@@ -100,18 +106,13 @@ worldpack.*.json
 续写.txt
 续写_rewrite*.txt
 
-# Trellis framework (local tooling, changes on every upgrade)
-.trellis/tasks
-.trellis/scripts/
-.trellis/workspace/
-.trellis/.version
-.trellis/.template-hashes.json
-.trellis/.gitignore
-.trellis/.developer
-.trellis/.backup-*
+# nov_wr-context local archive (local tooling and task keepsakes)
+.nov_wr-context/
 
-# Claude Code local config (hooks, agents, commands change on trellis upgrade)
+# Claude Code local config (hooks, agents, commands change on nov_wr-context upgrade)
 .claude/
+.codex
+.codex/
 AGENTS.md
 test-results/
 .agent/

@@ -4,16 +4,26 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Callable, Iterable, Protocol
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
+from app.core.job_runtime import (
+    apply_row_updates,
+    claim_lease_values,
+    refresh_lease_values,
+    is_stale_running_job,
+    normalize_utc_naive,
+    release_lease_values,
+    run_job_until_idle,
+    stale_running_job_filter,
+    utcnow_naive,
+)
 from app.models import DerivedAssetJob
 
 logger = logging.getLogger(__name__)
@@ -30,18 +40,6 @@ ACTIVE_DERIVED_ASSET_JOB_STATUSES = frozenset(
         DERIVED_ASSET_JOB_STATUS_RUNNING,
     }
 )
-
-
-def _utcnow_naive() -> datetime:
-    return datetime.now(timezone.utc).astimezone(timezone.utc).replace(tzinfo=None)
-
-
-def _normalize_utc_naive(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 @dataclass(slots=True)
@@ -78,6 +76,8 @@ class _DerivedAssetClaim:
     asset_kind: str
     target_revision: int
     worker_id: str
+    started_at: datetime
+    queue_wait_ms: float | None
 
 
 class DerivedAssetJobAdapter(Protocol):
@@ -98,6 +98,8 @@ class DerivedAssetJobAdapter(Protocol):
         db: Session,
         job: DerivedAssetJob,
         target_revision: int,
+        claim: _DerivedAssetClaim,
+        finished_at: datetime,
         build_output: Any,
     ) -> DerivedAssetPersistResult: ...
 
@@ -125,11 +127,11 @@ def serialize_derived_asset_job(job: DerivedAssetJob) -> DerivedAssetJobSnapshot
         result=dict(job.result or {}),
         error=job.error,
         lease_owner=job.lease_owner,
-        lease_expires_at=_normalize_utc_naive(job.lease_expires_at),
-        started_at=_normalize_utc_naive(job.started_at),
-        finished_at=_normalize_utc_naive(job.finished_at),
-        created_at=_normalize_utc_naive(job.created_at),
-        updated_at=_normalize_utc_naive(job.updated_at),
+        lease_expires_at=normalize_utc_naive(job.lease_expires_at),
+        started_at=normalize_utc_naive(job.started_at),
+        finished_at=normalize_utc_naive(job.finished_at),
+        created_at=normalize_utc_naive(job.created_at),
+        updated_at=normalize_utc_naive(job.updated_at),
     )
 
 
@@ -192,49 +194,24 @@ def is_stale_running_derived_asset_job(
     settings: Settings | None = None,
     now: datetime | None = None,
 ) -> bool:
-    if job.status != DERIVED_ASSET_JOB_STATUS_RUNNING:
-        return False
-
-    current_time = _normalize_utc_naive(now) or _utcnow_naive()
-    lease_expires_at = _normalize_utc_naive(job.lease_expires_at)
-    if lease_expires_at is not None:
-        return lease_expires_at <= current_time
-
     resolved_settings = settings or get_settings()
-    stale_timeout = int(resolved_settings.derived_asset_job_stale_timeout_seconds or 0)
-    if stale_timeout <= 0:
-        return False
-
-    updated_at = _normalize_utc_naive(job.updated_at) or _normalize_utc_naive(job.created_at)
-    if updated_at is None:
-        return False
-    return updated_at <= (current_time - timedelta(seconds=stale_timeout))
-
-
-def _running_stale_filter(now: datetime, settings: Settings):
-    stale_timeout = int(settings.derived_asset_job_stale_timeout_seconds or 0)
-    if stale_timeout > 0:
-        stale_cutoff = now - timedelta(seconds=stale_timeout)
-        return or_(
-            and_(
-                DerivedAssetJob.lease_expires_at.is_not(None),
-                DerivedAssetJob.lease_expires_at <= now,
-            ),
-            and_(
-                DerivedAssetJob.lease_expires_at.is_(None),
-                DerivedAssetJob.updated_at <= stale_cutoff,
-            ),
-        )
-    return and_(
-        DerivedAssetJob.lease_expires_at.is_not(None),
-        DerivedAssetJob.lease_expires_at <= now,
+    return is_stale_running_job(
+        status=job.status,
+        running_status=DERIVED_ASSET_JOB_STATUS_RUNNING,
+        lease_expires_at=job.lease_expires_at,
+        updated_at=job.updated_at,
+        created_at=job.created_at,
+        stale_timeout_seconds=int(resolved_settings.derived_asset_job_stale_timeout_seconds or 0),
+        now=now,
     )
 
 
-def _resolve_lease_expiry(now: datetime, lease_seconds: int) -> datetime | None:
-    if lease_seconds <= 0:
-        return None
-    return now + timedelta(seconds=lease_seconds)
+def _running_stale_filter(now: datetime, settings: Settings):
+    return stale_running_job_filter(
+        DerivedAssetJob,
+        now=now,
+        stale_timeout_seconds=int(settings.derived_asset_job_stale_timeout_seconds or 0),
+    )
 
 
 def enqueue_derived_asset_job(
@@ -292,8 +269,10 @@ def enqueue_derived_asset_job(
             },
         )
         job.status = DERIVED_ASSET_JOB_STATUS_QUEUED
+        job.claimed_revision = None
         job.lease_owner = None
         job.lease_expires_at = None
+        job.started_at = None
         job.finished_at = None
 
     if (
@@ -302,13 +281,21 @@ def enqueue_derived_asset_job(
     ):
         return job
 
+    preserve_last_completion = (
+        job.status == DERIVED_ASSET_JOB_STATUS_COMPLETED
+        and int(job.completed_revision or 0) > 0
+    )
+
     if job.status != DERIVED_ASSET_JOB_STATUS_RUNNING:
         job.status = DERIVED_ASSET_JOB_STATUS_QUEUED
         job.error = None
-        job.result = {}
         job.lease_owner = None
         job.lease_expires_at = None
-        job.finished_at = None
+        job.claimed_revision = None
+        job.started_at = None
+        if not preserve_last_completion:
+            job.result = {}
+            job.finished_at = None
     return job
 
 
@@ -344,7 +331,12 @@ def _claim_derived_asset_job(
         ):
             return None
 
-        now = _utcnow_naive()
+        now = utcnow_naive()
+        queue_wait_ms: float | None = None
+        if job.status == DERIVED_ASSET_JOB_STATUS_QUEUED:
+            queued_at = normalize_utc_naive(job.updated_at) or normalize_utc_naive(job.created_at)
+            if queued_at is not None:
+                queue_wait_ms = round(max((now - queued_at).total_seconds() * 1000, 0.0), 1)
         update_query = (
             db.query(DerivedAssetJob)
             .filter(
@@ -361,19 +353,18 @@ def _claim_derived_asset_job(
             update_query = update_query.filter(DerivedAssetJob.status == job.status)
 
         claimed = update_query.update(
-            {
-                DerivedAssetJob.status: DERIVED_ASSET_JOB_STATUS_RUNNING,
-                DerivedAssetJob.claimed_revision: target_revision,
-                DerivedAssetJob.error: None,
-                DerivedAssetJob.lease_owner: worker_id,
-                DerivedAssetJob.lease_expires_at: _resolve_lease_expiry(
-                    now,
-                    int(settings.derived_asset_job_lease_seconds or 0),
-                ),
-                DerivedAssetJob.started_at: now,
-                DerivedAssetJob.finished_at: None,
-                DerivedAssetJob.updated_at: now,
-            },
+            claim_lease_values(
+                DerivedAssetJob,
+                now=now,
+                worker_id=worker_id,
+                lease_seconds=int(settings.derived_asset_job_lease_seconds or 0),
+                extra_updates={
+                    DerivedAssetJob.status: DERIVED_ASSET_JOB_STATUS_RUNNING,
+                    DerivedAssetJob.claimed_revision: target_revision,
+                    DerivedAssetJob.error: None,
+                    DerivedAssetJob.finished_at: None,
+                },
+            ),
             synchronize_session=False,
         )
         if claimed != 1:
@@ -387,6 +378,8 @@ def _claim_derived_asset_job(
             asset_kind=asset_kind,
             target_revision=target_revision,
             worker_id=worker_id,
+            started_at=now,
+            queue_wait_ms=queue_wait_ms,
         )
     finally:
         db.close()
@@ -419,10 +412,13 @@ def _finalize_success(
             )
             return False
 
+        finished_at = utcnow_naive()
         persisted = adapter.persist_success(
             db=db,
             job=job,
             target_revision=claim.target_revision,
+            claim=claim,
+            finished_at=finished_at,
             build_output=build_output,
         )
         if persisted.next_target_revision is not None:
@@ -436,18 +432,37 @@ def _finalize_success(
                 int(persisted.completed_revision),
             )
         job.result = dict(persisted.result or {})
-        job.error = None
-        job.lease_owner = None
-        job.lease_expires_at = None
 
         if persisted.superseded or int(job.target_revision or 0) > claim.target_revision:
-            job.status = DERIVED_ASSET_JOB_STATUS_QUEUED
-            job.finished_at = None
+            apply_row_updates(
+                job,
+                release_lease_values(
+                    DerivedAssetJob,
+                    now=utcnow_naive(),
+                    extra_updates={
+                        DerivedAssetJob.status: DERIVED_ASSET_JOB_STATUS_QUEUED,
+                        DerivedAssetJob.claimed_revision: None,
+                        DerivedAssetJob.error: None,
+                        DerivedAssetJob.finished_at: None,
+                    },
+                ),
+            )
             db.commit()
             return True
 
-        job.status = DERIVED_ASSET_JOB_STATUS_COMPLETED
-        job.finished_at = _utcnow_naive()
+        apply_row_updates(
+            job,
+            release_lease_values(
+                DerivedAssetJob,
+                now=finished_at,
+                extra_updates={
+                    DerivedAssetJob.status: DERIVED_ASSET_JOB_STATUS_COMPLETED,
+                    DerivedAssetJob.claimed_revision: None,
+                    DerivedAssetJob.error: None,
+                    DerivedAssetJob.finished_at: finished_at,
+                },
+            ),
+        )
         db.commit()
         return False
     except Exception:
@@ -491,19 +506,38 @@ def _finalize_failure(
             error=error,
         )
         job.result = {}
-        job.lease_owner = None
-        job.lease_expires_at = None
 
         if superseded or int(job.target_revision or 0) > claim.target_revision:
-            job.status = DERIVED_ASSET_JOB_STATUS_QUEUED
-            job.error = None
-            job.finished_at = None
+            apply_row_updates(
+                job,
+                release_lease_values(
+                    DerivedAssetJob,
+                    now=utcnow_naive(),
+                    extra_updates={
+                        DerivedAssetJob.status: DERIVED_ASSET_JOB_STATUS_QUEUED,
+                        DerivedAssetJob.claimed_revision: None,
+                        DerivedAssetJob.error: None,
+                        DerivedAssetJob.finished_at: None,
+                    },
+                ),
+            )
             db.commit()
             return True
 
-        job.status = DERIVED_ASSET_JOB_STATUS_FAILED
-        job.error = error
-        job.finished_at = _utcnow_naive()
+        finished_at = utcnow_naive()
+        apply_row_updates(
+            job,
+            release_lease_values(
+                DerivedAssetJob,
+                now=finished_at,
+                extra_updates={
+                    DerivedAssetJob.status: DERIVED_ASSET_JOB_STATUS_FAILED,
+                    DerivedAssetJob.claimed_revision: None,
+                    DerivedAssetJob.error: error,
+                    DerivedAssetJob.finished_at: finished_at,
+                },
+            ),
+        )
         db.commit()
         return False
     except Exception:
@@ -511,6 +545,108 @@ def _finalize_failure(
         raise
     finally:
         db.close()
+
+
+def _refresh_derived_asset_job_lease(
+    *,
+    claim: _DerivedAssetClaim,
+    session_factory: Callable[[], Session],
+    settings: Settings,
+) -> bool:
+    db = session_factory()
+    try:
+        job = db.query(DerivedAssetJob).filter(DerivedAssetJob.id == claim.job_id).first()
+        if (
+            job is None
+            or job.status != DERIVED_ASSET_JOB_STATUS_RUNNING
+            or job.lease_owner != claim.worker_id
+            or int(job.claimed_revision or 0) != claim.target_revision
+        ):
+            return False
+
+        apply_row_updates(
+            job,
+            refresh_lease_values(
+                DerivedAssetJob,
+                now=utcnow_naive(),
+                lease_seconds=int(settings.derived_asset_job_lease_seconds or 0),
+            ),
+        )
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        logger.warning(
+            "Failed to refresh derived-asset lease heartbeat",
+            extra={
+                "job_id": claim.job_id,
+                "novel_id": claim.novel_id,
+                "asset_kind": claim.asset_kind,
+            },
+            exc_info=True,
+        )
+        return True
+    finally:
+        db.close()
+
+
+class _DerivedAssetRuntimeAdapter:
+    def __init__(
+        self,
+        *,
+        adapter: DerivedAssetJobAdapter,
+        session_factory: Callable[[], Session],
+        settings: Settings,
+    ) -> None:
+        self._adapter = adapter
+        self._session_factory = session_factory
+        self._settings = settings
+
+    def build(self, *, claim: _DerivedAssetClaim) -> Any:
+        return self._adapter.build(
+            novel_id=claim.novel_id,
+            target_revision=claim.target_revision,
+            session_factory=self._session_factory,
+            settings=self._settings,
+        )
+
+    def finalize_success(self, *, claim: _DerivedAssetClaim, build_output: Any) -> bool:
+        return _finalize_success(
+            claim=claim,
+            adapter=self._adapter,
+            build_output=build_output,
+            session_factory=self._session_factory,
+        )
+
+    def finalize_failure(self, *, claim: _DerivedAssetClaim, error: str) -> bool:
+        return _finalize_failure(
+            claim=claim,
+            adapter=self._adapter,
+            error=error,
+            session_factory=self._session_factory,
+        )
+
+    def sanitize_error(self, exc: Exception) -> str:
+        return self._adapter.sanitize_error(exc)
+
+    def format_failure(self, claim: _DerivedAssetClaim) -> str:
+        return (
+            f"derived_asset[{claim.asset_kind}]: "
+            f"build failed for novel {claim.novel_id} revision {claim.target_revision}"
+        )
+
+    def heartbeat(self, *, claim: _DerivedAssetClaim) -> bool:
+        return _refresh_derived_asset_job_lease(
+            claim=claim,
+            session_factory=self._session_factory,
+            settings=self._settings,
+        )
+
+    def heartbeat_interval_seconds(self, *, claim: _DerivedAssetClaim) -> float:
+        lease_seconds = int(self._settings.derived_asset_job_lease_seconds or 0)
+        if lease_seconds <= 0:
+            return 0.0
+        return max(min(lease_seconds / 3, 30.0), 1.0)
 
 
 def run_derived_asset_job_until_idle(
@@ -521,47 +657,18 @@ def run_derived_asset_job_until_idle(
     settings: Settings | None = None,
 ) -> None:
     resolved_settings = settings or get_settings()
-    worker_id = uuid.uuid4().hex
-
-    while True:
-        claim = _claim_derived_asset_job(
+    run_job_until_idle(
+        claim_next=lambda worker_id: _claim_derived_asset_job(
             novel_id=novel_id,
             asset_kind=adapter.asset_kind,
             session_factory=session_factory,
             worker_id=worker_id,
             settings=resolved_settings,
-        )
-        if claim is None:
-            return
-
-        try:
-            build_output = adapter.build(
-                novel_id=novel_id,
-                target_revision=claim.target_revision,
-                session_factory=session_factory,
-                settings=resolved_settings,
-            )
-        except Exception as exc:
-            logger.exception(
-                "derived_asset[%s]: build failed for novel %s revision %s",
-                adapter.asset_kind,
-                novel_id,
-                claim.target_revision,
-            )
-            if _finalize_failure(
-                claim=claim,
-                adapter=adapter,
-                error=adapter.sanitize_error(exc),
-                session_factory=session_factory,
-            ):
-                continue
-            return
-
-        if _finalize_success(
-            claim=claim,
+        ),
+        adapter=_DerivedAssetRuntimeAdapter(
             adapter=adapter,
-            build_output=build_output,
             session_factory=session_factory,
-        ):
-            continue
-        return
+            settings=resolved_settings,
+        ),
+        logger=logger,
+    )

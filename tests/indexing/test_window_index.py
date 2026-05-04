@@ -1,3 +1,5 @@
+import msgpack
+
 from app.core.indexing.window_index import NovelIndex, WindowRef
 
 
@@ -23,6 +25,60 @@ def test_window_index_msgpack_round_trip():
 
     assert isinstance(packed, bytes)
     assert restored == original
+
+
+def test_window_index_msgpack_omits_window_entities_from_compact_payload():
+    original = NovelIndex(
+        entity_windows={
+            "云澈": [
+                WindowRef(window_id=1, chapter_id=1, start_pos=0, end_pos=120, entity_count=5),
+            ],
+            "楚月仙": [
+                WindowRef(window_id=1, chapter_id=1, start_pos=0, end_pos=120, entity_count=5),
+            ],
+        },
+        window_entities={
+            1: {"云澈", "楚月仙"},
+        },
+    )
+
+    payload = msgpack.unpackb(original.to_msgpack(), raw=False)
+
+    assert payload["v"] == 2
+    assert "w" not in payload
+    assert payload["e"]["云澈"][0] == [1, 1, 0, 120, 5]
+
+
+def test_window_index_from_msgpack_keeps_legacy_payload_compatibility():
+    legacy_payload = msgpack.packb(
+        {
+            "entity_windows": {
+                "云澈": [
+                    {
+                        "window_id": 1,
+                        "chapter_id": 1,
+                        "start_pos": 0,
+                        "end_pos": 120,
+                        "entity_count": 5,
+                    }
+                ],
+                "楚月仙": [
+                    {
+                        "window_id": 1,
+                        "chapter_id": 1,
+                        "start_pos": 0,
+                        "end_pos": 120,
+                        "entity_count": 5,
+                    }
+                ],
+            }
+        },
+        use_bin_type=True,
+    )
+
+    restored = NovelIndex.from_msgpack(legacy_payload)
+
+    assert set(restored.window_entities[1]) == {"云澈", "楚月仙"}
 
 
 def test_find_entity_passages_sorted_by_entity_count():

@@ -145,9 +145,10 @@ Co-occurrence pairs (Name A -- Name B: co-occurrence count):
 
 1) **Filter noise**: Remove verbs, adjectives, common nouns, and other non-entity words.
 2) **Merge aliases**: Combine different references to the same character/location into one entity — use the full name as `name`, put alternatives in `aliases`. For example: "John" and "Mr. Smith" → name=John Smith, aliases=[John, Mr. Smith].
-3) **Classify**: entity_type from: Character, Location, Item, Faction, Concept, other.
+3) **Classify**: entity_type from: Character, Location, Item, Faction, Organization, Concept, other.
 4) **Relationship labels**: label must be a specific, informative description (2-4 words) that conveys the relationship at a glance. Do NOT use vague words like "related", "associated", "connected". Good examples: father-daughter, mentor-student, sworn enemy, childhood friend, master-servant, belongs to, located in, loyal to. Bad examples: related, associated, connected, linked.
-5) Only output high-confidence entities and relationships — quality over quantity.
+5) **Prefer concrete names**: prefer the more specific proper noun over a generic umbrella term. If both a concrete place/org name and a broad background noun appear, usually keep the concrete one. School / shop / clan / legion / empire / planet-style names with a distinctive prefix are usually high-value entities; broad backdrop words like "interstellar" or "world" are usually not.
+6) Only output high-confidence entities and relationships — quality over quantity.
 
 ## Example output
 

@@ -3,13 +3,14 @@ import { useNavigate } from 'react-router-dom'
 import '@/lib/uiMessagePacks/novel'
 import { cn } from '@/lib/utils'
 import { getLlmApiErrorMessage } from '@/lib/llmErrorMessages'
+import { trackHostedAnalyticsEvent } from '@/lib/hostedAnalytics'
 import { ApiError } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { useUiLocale } from '@/contexts/UiLocaleContext'
 import { useGenerateWorld } from '@/hooks/world/useWorldGeneration'
 import { useImportWorldpack } from '@/hooks/world/useWorldpack'
-import type { WorldpackV1 } from '@/types/api'
+import type { WorldGenerateResponse, WorldpackImportResponse, WorldpackV1 } from '@/types/api'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -56,15 +57,26 @@ export function WorldGenerationDialog({
   novelId,
   open,
   onOpenChange,
+  analyticsSource = 'unknown',
+  onGenerateSuccess,
+  navigateOnGenerateSuccess = true,
+  onImportSuccess,
+  navigateOnImportSuccess = true,
 }: {
   novelId: number
   open: boolean
   onOpenChange: (open: boolean) => void
+  analyticsSource?: string
+  onGenerateSuccess?: (response: WorldGenerateResponse) => void
+  navigateOnGenerateSuccess?: boolean
+  onImportSuccess?: (response: WorldpackImportResponse) => void
+  navigateOnImportSuccess?: boolean
 }) {
   const { locale, t } = useUiLocale()
   const navigate = useNavigate()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const trackedOpenRef = useRef(false)
 
   const [text, setText] = useState('')
   const [genError, setGenError] = useState<string | null>(null)
@@ -83,6 +95,21 @@ export function WorldGenerationDialog({
     return () => document.removeEventListener('keydown', handler)
   }, [open, onOpenChange])
 
+  useEffect(() => {
+    if (!open) {
+      trackedOpenRef.current = false
+      return
+    }
+    if (trackedOpenRef.current) return
+    trackedOpenRef.current = true
+    void trackHostedAnalyticsEvent('world_generate_open', {
+      novelId,
+      meta: {
+        source_surface: analyticsSource,
+      },
+    })
+  }, [analyticsSource, novelId, open])
+
   const trimmed = text.trim()
   const nonWhitespaceLen = trimmed.replace(/\s/g, '').length
   const tooShort = nonWhitespaceLen > 0 && nonWhitespaceLen < MIN_LEN
@@ -92,14 +119,32 @@ export function WorldGenerationDialog({
   const handleSubmit = () => {
     if (!canSubmit) return
     setGenError(null)
+    void trackHostedAnalyticsEvent('world_generate_submit', {
+      novelId,
+      meta: {
+        source_surface: analyticsSource,
+        text_length: trimmed.length,
+      },
+    })
     generate.mutate(
       { text: trimmed },
       {
-        onSuccess: () => {
+        onSuccess: (response) => {
+          onGenerateSuccess?.(response)
           onOpenChange(false)
-          navigate(`/world/${novelId}?tab=review&kind=entities`)
+          if (navigateOnGenerateSuccess) {
+            navigate(`/world/${novelId}?tab=review&kind=entities`)
+          }
         },
         onError: (err) => {
+          void trackHostedAnalyticsEvent('world_generate_failed', {
+            novelId,
+            meta: {
+              source_surface: analyticsSource,
+              status: err instanceof ApiError ? err.status : null,
+              error_code: err instanceof ApiError ? err.code ?? null : 'client_error',
+            },
+          })
           if (err instanceof ApiError) {
             const llmMessage = getLlmApiErrorMessage(err, locale)
             if (llmMessage) {
@@ -132,18 +177,50 @@ export function WorldGenerationDialog({
     try {
       const parsed = JSON.parse(await file.text()) as unknown
       if (!isWorldpackV1(parsed)) {
+        void trackHostedAnalyticsEvent('worldpack_import_failed', {
+          novelId,
+          meta: {
+            source_surface: analyticsSource,
+            error_code: 'worldpack_file_unsupported',
+          },
+        })
         setImportError(t('worldModel.worldpack.fileUnsupported'))
         return
       }
-      importWorldpack.mutate(parsed, {
-        onSuccess: () => {
-          onOpenChange(false)
-          navigate(`/world/${novelId}`)
+      void trackHostedAnalyticsEvent('worldpack_import_submit', {
+        novelId,
+        meta: {
+          source_surface: analyticsSource,
         },
-        onError: () => setImportError(t('worldModel.worldpack.failed')),
+      })
+      importWorldpack.mutate(parsed, {
+        onSuccess: (response) => {
+          onImportSuccess?.(response)
+          onOpenChange(false)
+          if (navigateOnImportSuccess) {
+            navigate(`/world/${novelId}`)
+          }
+        },
+        onError: (err) => {
+          void trackHostedAnalyticsEvent('worldpack_import_failed', {
+            novelId,
+            meta: {
+              source_surface: analyticsSource,
+              error_code: err instanceof ApiError ? err.code ?? null : 'worldpack_import_failed',
+            },
+          })
+          setImportError(t('worldModel.worldpack.failed'))
+        },
       })
     } catch (err) {
       console.error(err)
+      void trackHostedAnalyticsEvent('worldpack_import_failed', {
+        novelId,
+        meta: {
+          source_surface: analyticsSource,
+          error_code: 'worldpack_file_unreadable',
+        },
+      })
       setImportError(t('worldModel.worldpack.fileUnreadable'))
     } finally {
       e.target.value = ''

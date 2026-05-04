@@ -10,9 +10,17 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:contracts": "vitest run src/__tests__/contracts",
+    "test:runtime": "vitest run src/__tests__/runtime",
+    "test:orchestration": "vitest run src/__tests__/orchestration",
+    "test:components": "vitest run src/__tests__/components",
+    "test:pages": "vitest run src/__tests__/pages",
+    "test:studio-regression": "vitest run src/__tests__/contracts/world src/__tests__/runtime/world src/__tests__/orchestration/studio src/__tests__/components/world src/__tests__/components/studio src/__tests__/pages/studio",
     "test:e2e": "playwright test",
     "test:e2e:mock": "playwright test --config=playwright.config.ts",
-    "test:e2e:integration": "playwright test --config=playwright.integration.config.ts"
+    "test:e2e:integration": "playwright test --config=playwright.integration.config.ts",
+    "test:e2e:studio:mock": "playwright test --config=playwright.config.ts e2e/mock/studio",
+    "test:e2e:studio:integration": "playwright test --config=playwright.integration.config.ts e2e/integration/studio"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -27,6 +35,7 @@
     "@xyflow/react": "^12.10.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "framer-motion": "^12.38.0",
     "lucide-react": "^0.469.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
@@ -55,5 +64,17 @@
     "typescript-eslint": "^8.54.0",
     "vite": "^7.3.1",
     "vitest": "^4.0.18"
+  },
+  "overrides": {
+    "ajv": "6.14.0",
+    "flatted": "3.4.2",
+    "undici": "7.24.7",
+    "rollup": "4.60.1",
+    "picomatch@2.3.1": "2.3.2",
+    "picomatch@4.0.3": "4.0.4",
+    "minimatch@3.1.2": "3.1.5",
+    "minimatch@9.0.5": "9.0.9",
+    "brace-expansion@1.1.12": "1.1.13",
+    "brace-expansion@2.0.2": "2.0.3"
   }
 }

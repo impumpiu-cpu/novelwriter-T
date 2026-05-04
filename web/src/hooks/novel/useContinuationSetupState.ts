@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Isaac.X.Ω.Yuan
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { api } from '@/services/api'
@@ -24,13 +24,6 @@ export const LENGTH_OPTIONS: LengthOption[] = [
 const MIN_CONTEXT_CHAPTERS = 1
 const MAX_CONTEXT_CHAPTERS = 5
 const DEFAULT_CONTEXT_CHAPTERS = 5
-
-const DEMO_NOVEL_TITLE = '西游记'
-const DEMO_DEFAULT_INSTRUCTION =
-  '唐僧一行在松林中遇到一位自称观音座下的年轻僧人，言辞恳切，主动请缨护送西行。' +
-  '八戒贪图省事，极力撺掇师父收留；沙僧不动声色，但注意到此人禅杖上刻有不属于佛门的纹路。' +
-  '此人身份留白——可以是真心向佛的散修，也可以是某方势力安插的棋子。' +
-  '本章以沙僧一个未说出口的疑虑收束。'
 
 // ── Helpers ──
 
@@ -88,21 +81,6 @@ export function useContinuationSetupState(novelId: number, chapterNum: number | 
       setPrefsLoaded(true)
     })
   }, [user?.preferences, prefsLoaded])
-
-  // Demo novel pre-fill
-  const demoDefaultApplied = useRef(false)
-  useEffect(() => {
-    if (!novelId || demoDefaultApplied.current) return
-    let cancelled = false
-    api.getNovel(novelId).then(n => {
-      if (cancelled) return
-      if (n.title === DEMO_NOVEL_TITLE) {
-        demoDefaultApplied.current = true
-        setInstruction(prev => prev || DEMO_DEFAULT_INSTRUCTION)
-      }
-    }).catch(() => {})
-    return () => { cancelled = true }
-  }, [novelId])
 
   // Save preferences to server
   const savePrefs = useCallback(() => {

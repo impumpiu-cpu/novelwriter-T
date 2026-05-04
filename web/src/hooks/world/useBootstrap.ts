@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { worldApi, ApiError } from '@/services/api'
 import { worldKeys } from './keys'
@@ -9,8 +10,13 @@ function isRunning(status: BootstrapStatus): boolean {
   return RUNNING_STATUSES.includes(status)
 }
 
-export function useBootstrapStatus(novelId: number) {
-  return useQuery({
+interface UseBootstrapStatusOptions {
+  refetchWhenMissing?: boolean
+}
+
+export function useBootstrapStatus(novelId: number, options: UseBootstrapStatusOptions = {}) {
+  const qc = useQueryClient()
+  const bootstrapQuery = useQuery({
     queryKey: worldKeys.bootstrapStatus(novelId),
     queryFn: async () => {
       try {
@@ -26,9 +32,27 @@ export function useBootstrapStatus(novelId: number) {
     refetchInterval: (query) => {
       const data = query.state.data
       if (data && isRunning(data.status)) return 2000
+      if (options.refetchWhenMissing && data === null) return 2000
       return false
     },
   })
+
+  const lastTerminalRefreshKeyRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const data = bootstrapQuery.data
+    if (!data || isRunning(data.status)) return
+
+    const refreshKey = `${data.job_id}:${data.status}:${data.updated_at}`
+    if (lastTerminalRefreshKeyRef.current === refreshKey) return
+    lastTerminalRefreshKeyRef.current = refreshKey
+
+    qc.invalidateQueries({ queryKey: worldKeys.entities(novelId) })
+    qc.invalidateQueries({ queryKey: worldKeys.relationships(novelId) })
+    qc.invalidateQueries({ queryKey: worldKeys.systems(novelId) })
+  }, [bootstrapQuery.data, novelId, qc])
+
+  return bootstrapQuery
 }
 
 export function useTriggerBootstrap(novelId: number) {

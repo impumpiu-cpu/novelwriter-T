@@ -21,6 +21,20 @@ describe('llmErrorMessages', () => {
     expect(getLlmApiErrorMessage(err)).toContain('已关闭 AI 功能')
   })
 
+  it('maps duplicate-click admission errors to actionable copy', () => {
+    const continuationErr = new ApiError(409, 'HTTP 409', {
+      code: 'continuation_duplicate_request',
+      detail: { code: 'continuation_duplicate_request' },
+    })
+    const bootstrapErr = new ApiError(409, 'HTTP 409', {
+      code: 'bootstrap_index_already_fresh',
+      detail: { code: 'bootstrap_index_already_fresh' },
+    })
+
+    expect(getLlmApiErrorMessage(continuationErr)).toContain('已经在处理中')
+    expect(getLlmApiErrorMessage(bootstrapErr)).toContain('已经是最新状态')
+  })
+
   it('warns when the current BYOK config is partial', () => {
     expect(
       getLlmConfigWarning({ baseUrl: 'https://example.com/v1', apiKey: '', model: '' }),

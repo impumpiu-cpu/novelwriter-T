@@ -11,6 +11,8 @@ from app.config import reload_settings
 from app.main import app
 from app.database import get_db
 
+DEFAULT_PASSWORD = "password123!"
+
 
 @pytest.fixture()
 def hosted_client(tmp_path):
@@ -21,7 +23,10 @@ def hosted_client(tmp_path):
     orig_env = {}
     env_overrides = {
         "DEPLOY_MODE": "hosted",
-        "INVITE_CODE": "TEST-CODE-123",
+        "HOSTED_INVITE_CODES": (
+            '[{"code":"TEST-CODE-123","channel":"longkong","invite_batch":"batch-a"},'
+            '{"code":"TEST-CODE-456","channel":"wechat","invite_batch":"batch-b"}]'
+        ),
         "JWT_SECRET_KEY": "test-secret-key-for-hosted-mode-32b",
         "INITIAL_QUOTA": "5",
         "FEEDBACK_BONUS_QUOTA": "20",
@@ -80,6 +85,7 @@ class TestInviteRegistration:
         resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "小明",
+            "password": DEFAULT_PASSWORD,
         })
         assert resp.status_code == 201
         data = resp.json()
@@ -92,6 +98,7 @@ class TestInviteRegistration:
         resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "Cookie测试",
+            "password": DEFAULT_PASSWORD,
         })
 
         assert resp.status_code == 201
@@ -101,6 +108,7 @@ class TestInviteRegistration:
         hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "Cookie用户",
+            "password": DEFAULT_PASSWORD,
         })
 
         me_resp = hosted_client.get("/api/auth/me")
@@ -111,6 +119,7 @@ class TestInviteRegistration:
         hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "退出测试",
+            "password": DEFAULT_PASSWORD,
         })
 
         logout_resp = hosted_client.post("/api/auth/logout")
@@ -123,13 +132,25 @@ class TestInviteRegistration:
         resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "WRONG-CODE",
             "nickname": "小明",
+            "password": DEFAULT_PASSWORD,
         })
         assert resp.status_code == 403
+        assert resp.json()["detail"]["code"] == "invite_code_invalid"
+
+    def test_auth_options_exposes_invite_only_hosted_login(self, hosted_client):
+        resp = hosted_client.get("/api/auth/options")
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "deploy_mode": "hosted",
+            "invite_login_enabled": True,
+            "github_login_enabled": False,
+        }
 
     def test_invite_returns_user_with_quota(self, hosted_client):
         resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "测试用户",
+            "password": DEFAULT_PASSWORD,
         })
         token = resp.json()["access_token"]
 
@@ -142,65 +163,75 @@ class TestInviteRegistration:
         assert user["generation_quota"] == 5
         assert user["feedback_submitted"] is False
 
-    def test_invite_creates_auth_identity_row(self, hosted_client):
+    def test_invite_creates_auth_identity_rows(self, hosted_client):
         hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "身份映射测试",
+            "password": DEFAULT_PASSWORD,
         })
 
         db_gen = app.dependency_overrides[get_db]()
         db = next(db_gen)
         try:
-            from app.core.auth import AUTH_PROVIDER_INVITE
+            from app.core.auth import AUTH_PROVIDER_HOSTED_PASSWORD, AUTH_PROVIDER_INVITE_CODE, hash_invite_code
             from app.models import AuthIdentity, User
 
             user = db.query(User).filter(User.nickname == "身份映射测试").one()
-            identity = (
+            identities = (
                 db.query(AuthIdentity)
                 .filter(AuthIdentity.user_id == user.id)
-                .one()
+                .order_by(AuthIdentity.provider.asc())
+                .all()
             )
 
-            assert identity.provider == AUTH_PROVIDER_INVITE
-            assert identity.provider_user_id == "身份映射测试"
-            assert identity.provider_login == "身份映射测试"
-            assert identity.last_login_at is not None
+            assert [(identity.provider, identity.provider_user_id) for identity in identities] == [
+                (AUTH_PROVIDER_HOSTED_PASSWORD, "身份映射测试"),
+                (AUTH_PROVIDER_INVITE_CODE, hash_invite_code("TEST-CODE-123")),
+            ]
+
+            hosted_password_identity = next(
+                identity for identity in identities if identity.provider == AUTH_PROVIDER_HOSTED_PASSWORD
+            )
+            invite_identity = next(
+                identity for identity in identities if identity.provider == AUTH_PROVIDER_INVITE_CODE
+            )
+            assert hosted_password_identity.provider_login == "身份映射测试"
+            assert hosted_password_identity.last_login_at is not None
+            assert invite_identity.provider_login is None
+            assert invite_identity.last_login_at is not None
         finally:
             db.close()
 
-    def test_invite_relogin_returns_same_user_and_preserves_quota(self, hosted_client):
-        """Re-inviting with the same nickname should log into the same account."""
+    def test_nickname_password_login_returns_same_user_and_preserves_quota(self, hosted_client):
         resp1 = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "重登测试",
+            "password": DEFAULT_PASSWORD,
         })
         assert resp1.status_code == 201
         token1 = resp1.json()["access_token"]
 
         me1 = hosted_client.get("/api/auth/me", headers={"Authorization": f"Bearer {token1}"})
         assert me1.status_code == 200
-        user1 = me1.json()
-        user_id = user1["id"]
+        user_id = me1.json()["id"]
 
-        # Simulate usage by decrementing quota on the backend.
-        from app.core.auth import decrement_quota
+        from app.core.auth import AUTH_PROVIDER_HOSTED_PASSWORD, AUTH_PROVIDER_INVITE_CODE, decrement_quota
         from app.models import AuthIdentity, User
 
         db_gen = app.dependency_overrides[get_db]()
         db = next(db_gen)
         try:
-            u = db.query(User).filter(User.id == user_id).first()
-            assert u is not None
-            decrement_quota(db, u, count=2)
+            user = db.query(User).filter(User.id == user_id).one()
+            decrement_quota(db, user, count=2)
         finally:
             db.close()
 
-        # Re-login via invite: should NOT create a new user or reset quota.
-        resp2 = hosted_client.post("/api/auth/invite", json={
-            "invite_code": "TEST-CODE-123",
-            "nickname": "重登测试",
-        })
-        assert resp2.status_code == 201
+        hosted_client.post("/api/auth/logout")
+        resp2 = hosted_client.post(
+            "/api/auth/login",
+            data={"username": "重登测试", "password": DEFAULT_PASSWORD},
+        )
+        assert resp2.status_code == 200
         token2 = resp2.json()["access_token"]
 
         me2 = hosted_client.get("/api/auth/me", headers={"Authorization": f"Bearer {token2}"})
@@ -214,125 +245,72 @@ class TestInviteRegistration:
         try:
             identities = (
                 db.query(AuthIdentity)
-                .filter(AuthIdentity.provider_user_id == "重登测试")
+                .filter(AuthIdentity.user_id == user_id)
+                .order_by(AuthIdentity.provider.asc())
                 .all()
             )
-            assert len(identities) == 1
-            assert identities[0].user_id == user_id
+            assert [identity.provider for identity in identities] == [
+                AUTH_PROVIDER_HOSTED_PASSWORD,
+                AUTH_PROVIDER_INVITE_CODE,
+            ]
         finally:
             db.close()
 
-    def test_invite_login_repairs_missing_legacy_identity_without_creating_duplicate_user(self, hosted_client):
-        from app.core.auth import AUTH_PROVIDER_INVITE, hash_password
-        from app.models import AuthIdentity, User
+    def test_same_personal_code_cannot_be_reused_after_activation(self, hosted_client):
+        first_resp = hosted_client.post("/api/auth/invite", json={
+            "invite_code": "TEST-CODE-123",
+            "nickname": "原始昵称",
+            "password": DEFAULT_PASSWORD,
+        })
+        assert first_resp.status_code == 201
 
-        db_gen = app.dependency_overrides[get_db]()
-        db = next(db_gen)
-        try:
-            legacy_user = User(
-                username="legacy_invite_user",
-                hashed_password=hash_password("legacy-secret"),
-                nickname="历史用户",
-                generation_quota=2,
-            )
-            db.add(legacy_user)
-            db.commit()
-            db.refresh(legacy_user)
-            legacy_user_id = legacy_user.id
-        finally:
-            db.close()
+        hosted_client.post("/api/auth/logout")
 
+        relogin_resp = hosted_client.post("/api/auth/invite", json={
+            "invite_code": "TEST-CODE-123",
+            "nickname": "另一个昵称",
+            "password": DEFAULT_PASSWORD,
+        })
+        assert relogin_resp.status_code == 409
+        assert relogin_resp.json()["detail"]["code"] == "invite_code_already_claimed"
+
+    def test_same_nickname_cannot_claim_different_personal_codes(self, hosted_client):
+        first_resp = hosted_client.post("/api/auth/invite", json={
+            "invite_code": "TEST-CODE-123",
+            "nickname": "重复昵称",
+            "password": DEFAULT_PASSWORD,
+        })
+        assert first_resp.status_code == 201
+
+        hosted_client.post("/api/auth/logout")
+
+        second_resp = hosted_client.post("/api/auth/invite", json={
+            "invite_code": "TEST-CODE-456",
+            "nickname": "重复昵称",
+            "password": DEFAULT_PASSWORD,
+        })
+        assert second_resp.status_code == 409
+        assert second_resp.json()["detail"]["code"] == "hosted_login_nickname_taken"
+
+    def test_hosted_login_accepts_case_insensitive_nickname(self, hosted_client):
         invite_resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
-            "nickname": "历史用户",
+            "nickname": "CaseUser",
+            "password": DEFAULT_PASSWORD,
         })
         assert invite_resp.status_code == 201
 
-        me_resp = hosted_client.get("/api/auth/me")
-        assert me_resp.status_code == 200
-        user = me_resp.json()
-        assert user["id"] == legacy_user_id
-        assert user["generation_quota"] == 2
+        hosted_client.post("/api/auth/logout")
 
-        db_gen = app.dependency_overrides[get_db]()
-        db = next(db_gen)
-        try:
-            repaired_identity = (
-                db.query(AuthIdentity)
-                .filter(
-                    AuthIdentity.provider == AUTH_PROVIDER_INVITE,
-                    AuthIdentity.provider_user_id == "历史用户",
-                )
-                .one()
-            )
-            users = db.query(User).filter(User.nickname == "历史用户").order_by(User.id.asc()).all()
-
-            assert repaired_identity.user_id == legacy_user_id
-            assert repaired_identity.provider_login == "历史用户"
-            assert repaired_identity.last_login_at is not None
-            assert [existing_user.id for existing_user in users] == [legacy_user_id]
-        finally:
-            db.close()
-
-    def test_invite_login_repairs_missing_identity_using_earliest_legacy_user(self, hosted_client):
-        from app.core.auth import AUTH_PROVIDER_INVITE, hash_password
-        from app.models import AuthIdentity, User
-
-        db_gen = app.dependency_overrides[get_db]()
-        db = next(db_gen)
-        try:
-            first_user = User(
-                username="legacy_dup_1",
-                hashed_password=hash_password("legacy-secret-1"),
-                nickname="重复历史用户",
-                generation_quota=2,
-            )
-            second_user = User(
-                username="legacy_dup_2",
-                hashed_password=hash_password("legacy-secret-2"),
-                nickname="重复历史用户",
-                generation_quota=4,
-            )
-            db.add(first_user)
-            db.commit()
-            db.refresh(first_user)
-            db.add(second_user)
-            db.commit()
-            db.refresh(second_user)
-            first_user_id = first_user.id
-            second_user_id = second_user.id
-        finally:
-            db.close()
-
-        invite_resp = hosted_client.post("/api/auth/invite", json={
-            "invite_code": "TEST-CODE-123",
-            "nickname": "重复历史用户",
-        })
-        assert invite_resp.status_code == 201
+        login_resp = hosted_client.post(
+            "/api/auth/login",
+            data={"username": "caseuser", "password": DEFAULT_PASSWORD},
+        )
+        assert login_resp.status_code == 200
 
         me_resp = hosted_client.get("/api/auth/me")
         assert me_resp.status_code == 200
-        user = me_resp.json()
-        assert user["id"] == first_user_id
-        assert user["generation_quota"] == 2
-
-        db_gen = app.dependency_overrides[get_db]()
-        db = next(db_gen)
-        try:
-            repaired_identity = (
-                db.query(AuthIdentity)
-                .filter(
-                    AuthIdentity.provider == AUTH_PROVIDER_INVITE,
-                    AuthIdentity.provider_user_id == "重复历史用户",
-                )
-                .one()
-            )
-            users = db.query(User).filter(User.nickname == "重复历史用户").order_by(User.id.asc()).all()
-
-            assert repaired_identity.user_id == first_user_id
-            assert [existing_user.id for existing_user in users] == [first_user_id, second_user_id]
-        finally:
-            db.close()
+        assert me_resp.json()["nickname"] == "CaseUser"
 
     def test_invite_blocks_new_signup_once_hosted_user_cap_is_reached(self, hosted_client, monkeypatch):
         monkeypatch.setenv("HOSTED_MAX_USERS", "1")
@@ -341,31 +319,35 @@ class TestInviteRegistration:
         resp1 = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "容量1号",
+            "password": DEFAULT_PASSWORD,
         })
         assert resp1.status_code == 201
 
         resp2 = hosted_client.post("/api/auth/invite", json={
-            "invite_code": "TEST-CODE-123",
+            "invite_code": "TEST-CODE-456",
             "nickname": "容量2号",
+            "password": DEFAULT_PASSWORD,
         })
         assert resp2.status_code == 503
         assert resp2.json()["detail"]["code"] == "hosted_user_cap_reached"
 
-    def test_invite_allows_existing_user_relogin_even_when_user_cap_is_reached(self, hosted_client, monkeypatch):
+    def test_password_login_allows_existing_user_relogin_even_when_user_cap_is_reached(self, hosted_client, monkeypatch):
         monkeypatch.setenv("HOSTED_MAX_USERS", "1")
         reload_settings()
 
         resp1 = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "容量重登",
+            "password": DEFAULT_PASSWORD,
         })
         assert resp1.status_code == 201
 
-        resp2 = hosted_client.post("/api/auth/invite", json={
-            "invite_code": "TEST-CODE-123",
-            "nickname": "容量重登",
-        })
-        assert resp2.status_code == 201
+        hosted_client.post("/api/auth/logout")
+        resp2 = hosted_client.post(
+            "/api/auth/login",
+            data={"username": "容量重登", "password": DEFAULT_PASSWORD},
+        )
+        assert resp2.status_code == 200
 
     def test_invite_cap_stays_atomic_under_concurrent_signups(self, hosted_client, monkeypatch):
         import app.core.auth as auth_core
@@ -395,15 +377,15 @@ class TestInviteRegistration:
 
         results: dict[str, object] = {}
 
-        def submit_invite(nickname: str) -> None:
+        def submit_invite(invite_code: str, nickname: str) -> None:
             with TestClient(app) as client:
                 results[nickname] = client.post(
                     "/api/auth/invite",
-                    json={"invite_code": "TEST-CODE-123", "nickname": nickname},
+                    json={"invite_code": invite_code, "nickname": nickname, "password": DEFAULT_PASSWORD},
                 )
 
-        first_thread = threading.Thread(target=submit_invite, args=("并发容量1号",))
-        second_thread = threading.Thread(target=submit_invite, args=("并发容量2号",))
+        first_thread = threading.Thread(target=submit_invite, args=("TEST-CODE-123", "并发容量1号"))
+        second_thread = threading.Thread(target=submit_invite, args=("TEST-CODE-456", "并发容量2号"))
 
         first_thread.start()
         assert first_signup_entered.wait(timeout=5)
@@ -437,6 +419,7 @@ class TestInviteRegistration:
         resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "偏好上限测试",
+            "password": DEFAULT_PASSWORD,
         })
         token = resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -455,6 +438,7 @@ class TestQuota:
         resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "配额测试",
+            "password": DEFAULT_PASSWORD,
         })
         token = resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -482,6 +466,7 @@ class TestFeedback:
         resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "反馈测试",
+            "password": DEFAULT_PASSWORD,
         })
         token = resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -500,6 +485,7 @@ class TestFeedback:
         resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "建议测试",
+            "password": DEFAULT_PASSWORD,
         })
         token = resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -518,6 +504,7 @@ class TestFeedback:
         resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "Bug描述测试",
+            "password": DEFAULT_PASSWORD,
         })
         token = resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -542,6 +529,7 @@ class TestFeedback:
         resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "缺字段测试",
+            "password": DEFAULT_PASSWORD,
         })
         token = resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -566,6 +554,7 @@ class TestFeedback:
         resp = hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "重复反馈",
+            "password": DEFAULT_PASSWORD,
         })
         token = resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -590,6 +579,7 @@ class TestDecrementQuota:
         hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "扣减测试",
+            "password": DEFAULT_PASSWORD,
         })
 
         # Get the db session and user from the override
@@ -613,6 +603,7 @@ class TestDecrementQuota:
         hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "不足测试",
+            "password": DEFAULT_PASSWORD,
         })
 
         db_gen = app.dependency_overrides[get_db]()
@@ -632,6 +623,7 @@ class TestDecrementQuota:
         hosted_client.post("/api/auth/invite", json={
             "invite_code": "TEST-CODE-123",
             "nickname": "原子扣减",
+            "password": DEFAULT_PASSWORD,
         })
 
         db_gen = app.dependency_overrides[get_db]()

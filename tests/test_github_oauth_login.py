@@ -10,6 +10,8 @@ from app.config import reload_settings
 from app.main import app
 from app.database import get_db
 
+DEFAULT_PASSWORD = 'password123!'
+
 
 @pytest.fixture()
 def hosted_github_client(tmp_path):
@@ -18,12 +20,16 @@ def hosted_github_client(tmp_path):
     orig_env = {}
     env_overrides = {
         'DEPLOY_MODE': 'hosted',
-        'INVITE_CODE': 'TEST-CODE-123',
+        'HOSTED_INVITE_CODES': (
+            '[{"code":"TEST-CODE-123","channel":"longkong","invite_batch":"batch-a"},'
+            '{"code":"TEST-CODE-456","channel":"wechat","invite_batch":"batch-b"}]'
+        ),
         'JWT_SECRET_KEY': 'test-secret-key-for-hosted-mode-32b',
         'INITIAL_QUOTA': '5',
         'FEEDBACK_BONUS_QUOTA': '20',
         'GITHUB_OAUTH_CLIENT_ID': 'github-client-id',
         'GITHUB_OAUTH_CLIENT_SECRET': 'github-client-secret',
+        'HOSTED_GITHUB_LOGIN_ENABLED': 'true',
     }
     for key, val in env_overrides.items():
         orig_env[key] = os.environ.get(key)
@@ -100,8 +106,14 @@ def _mock_github_identity(monkeypatch, *, provider_user_id: str, login: str, dis
 
 
 class TestGitHubOAuthLogin:
+    def test_auth_options_report_github_login_enabled(self, hosted_github_client):
+        resp = hosted_github_client.get('/api/auth/options')
+        assert resp.status_code == 200
+        assert resp.json()["github_login_enabled"] is True
+        assert resp.json()["invite_login_enabled"] is True
+
     def test_first_github_login_creates_hosted_user_and_session(self, hosted_github_client, monkeypatch):
-        from app.core.auth import AUTH_PROVIDER_GITHUB, AUTH_PROVIDER_INVITE, SESSION_COOKIE_NAME
+        from app.core.auth import AUTH_PROVIDER_GITHUB, SESSION_COOKIE_NAME
         from app.models import AuthIdentity, User
 
         _mock_github_identity(
@@ -134,12 +146,10 @@ class TestGitHubOAuthLogin:
             identities = (
                 db.query(AuthIdentity)
                 .filter(AuthIdentity.user_id == db_user.id)
-                .order_by(AuthIdentity.provider.asc())
                 .all()
             )
             assert [(identity.provider, identity.provider_user_id) for identity in identities] == [
                 (AUTH_PROVIDER_GITHUB, '12345'),
-                (AUTH_PROVIDER_INVITE, 'The Octocat'),
             ]
 
             github_identity = (
@@ -254,7 +264,7 @@ class TestGitHubOAuthLogin:
         me_resp = hosted_github_client.get('/api/auth/me')
         assert me_resp.status_code == 401
 
-    def test_github_created_user_can_recover_via_invite_fallback_identity(self, hosted_github_client, monkeypatch):
+    def test_github_user_and_invite_user_stay_separate_without_fallback_identity(self, hosted_github_client, monkeypatch):
         from app.core.auth import decrement_quota
         from app.models import AuthIdentity, User
 
@@ -284,36 +294,46 @@ class TestGitHubOAuthLogin:
         hosted_github_client.post('/api/auth/logout')
         invite_relogin = hosted_github_client.post(
             '/api/auth/invite',
-            json={'invite_code': 'TEST-CODE-123', 'nickname': '回滚用户'},
+            json={'invite_code': 'TEST-CODE-123', 'nickname': '回滚用户', 'password': DEFAULT_PASSWORD},
         )
         assert invite_relogin.status_code == 201
 
-        recovered_user = hosted_github_client.get('/api/auth/me').json()
-        assert recovered_user['id'] == github_user_id
-        assert recovered_user['generation_quota'] == 3
+        invite_user = hosted_github_client.get('/api/auth/me').json()
+        assert invite_user['id'] != github_user_id
+        assert invite_user['generation_quota'] == 5
 
         db_gen = app.dependency_overrides[get_db]()
         db = next(db_gen)
         try:
-            identities = (
+            github_user = db.query(User).filter(User.id == github_user_id).one()
+            fresh_invite_user = db.query(User).filter(User.id == invite_user['id']).one()
+            github_identities = (
                 db.query(AuthIdentity)
                 .filter(AuthIdentity.user_id == github_user_id)
                 .order_by(AuthIdentity.provider.asc())
                 .all()
             )
-            assert [(identity.provider, identity.provider_user_id) for identity in identities] == [
+            invite_identities = (
+                db.query(AuthIdentity)
+                .filter(AuthIdentity.user_id == invite_user['id'])
+                .order_by(AuthIdentity.provider.asc())
+                .all()
+            )
+            assert github_user.generation_quota == 3
+            assert fresh_invite_user.generation_quota == 5
+            assert [(identity.provider, identity.provider_user_id) for identity in github_identities] == [
                 ('github', '77777'),
-                ('invite', '回滚用户'),
             ]
+            assert [identity.provider for identity in invite_identities] == ['hosted_password', 'invite_code']
         finally:
             db.close()
 
-    def test_github_signup_rejects_visible_name_owned_by_existing_invite_identity(self, hosted_github_client, monkeypatch):
+    def test_github_signup_allows_same_visible_name_as_existing_invite_user(self, hosted_github_client, monkeypatch):
         from app.models import AuthIdentity, User
 
         invite_resp = hosted_github_client.post(
             '/api/auth/invite',
-            json={'invite_code': 'TEST-CODE-123', 'nickname': '共享用户'},
+            json={'invite_code': 'TEST-CODE-123', 'nickname': '共享用户', 'password': DEFAULT_PASSWORD},
         )
         assert invite_resp.status_code == 201
         invite_user_id = hosted_github_client.get('/api/auth/me').json()['id']
@@ -333,20 +353,23 @@ class TestGitHubOAuthLogin:
             follow_redirects=False,
         )
         assert github_callback.status_code == 303
-        assert github_callback.headers['location'].startswith('/login?')
-        assert 'oauth_error=github_oauth_failed' in github_callback.headers['location']
+        assert github_callback.headers['location'] == '/library'
 
         me_resp = hosted_github_client.get('/api/auth/me')
-        assert me_resp.status_code == 401
+        assert me_resp.status_code == 200
+        github_user_id = me_resp.json()['id']
+        assert github_user_id != invite_user_id
 
         db_gen = app.dependency_overrides[get_db]()
         db = next(db_gen)
         try:
             users = db.query(User).order_by(User.id.asc()).all()
             identities = db.query(AuthIdentity).order_by(AuthIdentity.provider.asc()).all()
-            assert [user.id for user in users] == [invite_user_id]
+            assert sorted(user.id for user in users) == sorted([invite_user_id, github_user_id])
             assert [(identity.provider, identity.user_id) for identity in identities] == [
-                ('invite', invite_user_id),
+                ('github', github_user_id),
+                ('hosted_password', invite_user_id),
+                ('invite_code', invite_user_id),
             ]
         finally:
             db.close()

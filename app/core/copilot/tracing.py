@@ -33,9 +33,31 @@ def _tool_kind_for_name(tool_name: str) -> str:
     return {
         "find": "tool_find",
         "open": "tool_open",
+        "open_many": "tool_open",
         "read": "tool_read",
         "load_scope_snapshot": "tool_load_scope_snapshot",
     }.get(tool_name, "tool_other")
+
+
+def _extract_tool_trace_error(
+    *,
+    tool_name: str,
+    payload: dict[str, Any],
+) -> str | None:
+    top_level_error = payload.get("error")
+    if isinstance(top_level_error, str) and top_level_error.strip():
+        return top_level_error
+
+    if tool_name == "open_many":
+        results = payload.get("results")
+        if isinstance(results, list):
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                item_error = item.get("error")
+                if isinstance(item_error, str) and item_error.strip():
+                    return item_error
+    return None
 
 
 def _build_tool_trace_summary(
@@ -43,13 +65,16 @@ def _build_tool_trace_summary(
     tool_args: dict[str, Any],
     tool_result: str,
     interaction_locale: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    trace_error: str | None = None,
 ) -> str:
-    payload = _maybe_parse_json_object(tool_result) or {}
-    if isinstance(payload.get("error"), str):
+    payload = payload or _maybe_parse_json_object(tool_result) or {}
+    if trace_error:
         return get_copilot_text(
             CopilotTextKey.TRACE_RETRIEVAL_STEP_INCOMPLETE,
             locale=interaction_locale,
-            error=_truncate_trace_text(payload["error"], limit=64),
+            error=_truncate_trace_text(trace_error, limit=64),
         )
 
     if tool_name == "find":
@@ -92,6 +117,20 @@ def _build_tool_trace_summary(
                 CopilotTextKey.TRACE_OPEN_SOURCE_SUFFIX,
                 locale=interaction_locale,
                 count=source_count,
+            )
+        return summary
+
+    if tool_name == "open_many":
+        opened_count = payload.get("opened_count")
+        summary = get_copilot_text(
+            CopilotTextKey.TRACE_OPEN,
+            locale=interaction_locale,
+        )
+        if isinstance(opened_count, int):
+            summary += get_copilot_text(
+                CopilotTextKey.TRACE_OPEN_SOURCE_SUFFIX,
+                locale=interaction_locale,
+                count=opened_count,
             )
         return summary
 
@@ -157,17 +196,30 @@ def build_tool_journal_entry(
     round_number: int,
     call_index: int,
     interaction_locale: str = "zh",
+    tool_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = _maybe_parse_json_object(tool_result) or {}
+    trace_error = _extract_tool_trace_error(tool_name=tool_name, payload=payload)
+    entry = {
         "step_id": f"tool_{call_index}",
         "kind": _tool_kind_for_name(tool_name),
-        "status": "completed",
-        "summary": _build_tool_trace_summary(tool_name, tool_args, tool_result, interaction_locale),
+        "status": "incomplete" if trace_error else "completed",
+        "summary": _build_tool_trace_summary(
+            tool_name,
+            tool_args,
+            tool_result,
+            interaction_locale,
+            payload=payload,
+            trace_error=trace_error,
+        ),
         "tool": tool_name,
         "args": tool_args,
         "result_summary": tool_result[:200],
         "round": round_number,
     }
+    if tool_metadata:
+        entry["tool_metadata"] = tool_metadata
+    return entry
 
 
 def _build_trace_from_tool_journal(workspace: Workspace, interaction_locale: str) -> list[dict[str, Any]]:

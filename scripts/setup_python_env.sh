@@ -5,10 +5,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 PYTHON_REQUEST="${PYTHON_BIN:-}"
 INSTALL_DEV=true
+SYNC_GROUPS=()
+ENSURE_STATE_PROTO=true
 
 usage() {
   cat <<'EOF'
-Usage: scripts/setup_python_env.sh [--no-dev]
+Usage: scripts/setup_python_env.sh [--no-dev] [--skip-state-proto]
+
+Options:
+  --group <name>        Include an additional uv dependency group (repeatable)
+  --skip-state-proto    Skip automatic state-proto extension assurance
 
 Bootstraps the repo-local uv-managed virtualenv from pyproject.toml + uv.lock.
 
@@ -25,6 +31,18 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --no-dev)
       INSTALL_DEV=false
+      ;;
+    --group)
+      if [[ "$#" -lt 2 ]]; then
+        echo "Missing value for --group" >&2
+        usage >&2
+        exit 2
+      fi
+      SYNC_GROUPS+=("$2")
+      shift
+      ;;
+    --skip-state-proto)
+      ENSURE_STATE_PROTO=false
       ;;
     -h|--help)
       usage
@@ -60,19 +78,26 @@ uv venv --allow-existing --python "$PYTHON_REQUEST" "$VENV_DIR"
 PY_BIN="$VENV_DIR/bin/python"
 export UV_PROJECT_ENVIRONMENT="$VENV_DIR"
 
+sync_cmd=(
+  uv sync
+  --project "$ROOT_DIR"
+  --python "$PY_BIN"
+  --frozen
+  --no-install-project
+)
+
 if [[ "$INSTALL_DEV" == false ]]; then
-  uv sync \
-    --project "$ROOT_DIR" \
-    --python "$PY_BIN" \
-    --frozen \
-    --no-install-project \
-    --no-dev
-else
-  uv sync \
-    --project "$ROOT_DIR" \
-    --python "$PY_BIN" \
-    --frozen \
-    --no-install-project
+  sync_cmd+=(--no-dev)
+fi
+
+for group in "${SYNC_GROUPS[@]}"; do
+  sync_cmd+=(--group "$group")
+done
+
+"${sync_cmd[@]}"
+
+if [[ "$ENSURE_STATE_PROTO" == "true" ]]; then
+  "$ROOT_DIR/scripts/ensure_state_proto_extension.sh"
 fi
 
 echo "Python environment ready at $VENV_DIR"

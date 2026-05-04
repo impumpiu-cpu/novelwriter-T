@@ -7,7 +7,7 @@ import {
   type NovelCopilotSession,
 } from '@/types/copilot'
 import { ApiError, copilotApi } from '@/services/api'
-import { useQueryClient } from '@tanstack/react-query'
+import { QueryClient, useQueryClient } from '@tanstack/react-query'
 import { useUiLocale } from '@/contexts/UiLocaleContext'
 import { useToast } from '@/components/world-model/shared/useToast'
 import { worldKeys } from '@/hooks/world/keys'
@@ -166,6 +166,56 @@ function replaceSessionRun(
   const nextRuns = [...runs]
   nextRuns[index] = nextRun
   return { ...prev, [sessionId]: nextRuns }
+}
+
+export function collectInvalidateQueryKeysForAppliedSuggestions(
+  novelId: number,
+  suggestions: CopilotRun['suggestions'],
+) {
+  const keys = new Map<string, readonly unknown[]>()
+  const add = (key: readonly unknown[]) => {
+    keys.set(JSON.stringify(key), key)
+  }
+
+  suggestions.forEach((suggestion) => {
+    switch (suggestion.apply?.type) {
+      case 'create_entity':
+        add(worldKeys.entities(novelId))
+        break
+      case 'update_entity':
+        add(worldKeys.entities(novelId))
+        add(worldKeys.entity(novelId, suggestion.apply.entity_id))
+        break
+      case 'create_relationship':
+      case 'update_relationship':
+        add(worldKeys.relationships(novelId))
+        break
+      case 'create_system':
+        add(worldKeys.systems(novelId))
+        break
+      case 'update_system':
+        add(worldKeys.systems(novelId))
+        add(worldKeys.system(novelId, suggestion.apply.system_id))
+        break
+      default:
+        add(worldKeys.all(novelId))
+        break
+    }
+  })
+
+  return [...keys.values()]
+}
+
+export function invalidateWorldQueriesForAppliedSuggestions(
+  queryClient: QueryClient,
+  novelId: number,
+  suggestions: CopilotRun['suggestions'],
+) {
+  const keys = collectInvalidateQueryKeysForAppliedSuggestions(novelId, suggestions)
+  if (keys.length === 0) return
+  keys.forEach((key) => {
+    void queryClient.invalidateQueries({ queryKey: key })
+  })
 }
 
 export function useNovelCopilotRuns({
@@ -523,7 +573,14 @@ export function useNovelCopilotRuns({
         toast(getApplyFailureMessage(failedResults[0]))
       }
 
-      queryClient.invalidateQueries({ queryKey: worldKeys.all(session.novelId) })
+      const successfulSuggestions = run.suggestions.filter((suggestion) =>
+        resultByIdMap.get(suggestion.suggestion_id)?.success,
+      )
+      invalidateWorldQueriesForAppliedSuggestions(
+        queryClient,
+        session.novelId,
+        successfulSuggestions,
+      )
       return resp.results.every((r) => r.success)
     } catch {
       toast(t('copilot.errors.applyFailed'))

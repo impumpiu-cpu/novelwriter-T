@@ -86,6 +86,14 @@ def test_bootstrap_rejects_when_ai_budget_hard_stop_is_reached(client, monkeypat
     config_mod._settings_instance = Settings(deploy_mode="hosted", ai_hard_stop_usd=1.0, _env_file=None)
     try:
         db.add(
+            Chapter(
+                novel_id=novel.id,
+                chapter_number=1,
+                title="第一章",
+                content="这里有可以启动 bootstrap 的正文。",
+            )
+        )
+        db.add(
             TokenUsage(
                 user_id=user.id,
                 model="gemini-3.0-flash",
@@ -110,21 +118,18 @@ def test_bootstrap_rejects_when_ai_budget_hard_stop_is_reached(client, monkeypat
         config_mod._settings_instance = prev
 
 
-def test_bootstrap_allows_byok_when_ai_budget_hard_stop_is_reached(
+def test_bootstrap_rejects_byok_when_ai_budget_hard_stop_is_reached(
     client,
     monkeypatch,
-    allow_public_llm_url_resolution,
 ):
     import app.config as config_mod
     from app.config import Settings
-    from app.core.world import bootstrap_application as bootstrap_app
 
     c, db, user, novel = client
 
     prev = config_mod._settings_instance
     config_mod._settings_instance = Settings(deploy_mode="hosted", ai_hard_stop_usd=1.0, _env_file=None)
     try:
-        allow_public_llm_url_resolution()
         db.add(
             TokenUsage(
                 user_id=user.id,
@@ -147,11 +152,6 @@ def test_bootstrap_allows_byok_when_ai_budget_hard_stop_is_reached(
         )
         db.commit()
 
-        def fake_launch_bootstrap_job(*args, **kwargs):
-            return None
-
-        monkeypatch.setattr(bootstrap_app, "launch_bootstrap_job", fake_launch_bootstrap_job)
-
         before = user.generation_quota
         resp = c.post(
             f"/api/novels/{novel.id}/world/bootstrap",
@@ -162,9 +162,10 @@ def test_bootstrap_allows_byok_when_ai_budget_hard_stop_is_reached(
                 "x-llm-model": "byok-model",
             },
         )
-        assert resp.status_code == 202
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["code"] == "hosted_byok_disabled"
 
         db.refresh(user)
-        assert user.generation_quota == before - 1
+        assert user.generation_quota == before
     finally:
         config_mod._settings_instance = prev

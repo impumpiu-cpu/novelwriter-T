@@ -9,6 +9,10 @@ const NON_RETRIABLE_503_CODES = new Set([
   'ai_budget_meter_unavailable',
 ])
 
+function isHostedDeployMode(): boolean {
+  return (import.meta.env.VITE_DEPLOY_MODE || 'selfhost') === 'hosted'
+}
+
 export function isNonRetriable503Code(code: string | undefined): boolean {
   return !!code && NON_RETRIABLE_503_CODES.has(code)
 }
@@ -18,6 +22,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function llmHeaders(): HeadersInit {
+  if (isHostedDeployMode()) {
+    return {}
+  }
   const headers: Record<string, string> = {}
   const { baseUrl, apiKey, model } = getLlmConfig()
   if (baseUrl) headers['X-LLM-Base-Url'] = baseUrl

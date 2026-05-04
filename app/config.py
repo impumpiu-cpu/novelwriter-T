@@ -1,7 +1,8 @@
+import json
 from typing import Literal
 
 import os
-from pydantic import ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -21,16 +22,45 @@ def resolve_context_chapters(value: int | None, *, default: int | None = None) -
     return clamp_context_chapters(value)
 
 
+def normalize_hosted_invite_code(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError("invite code cannot be empty")
+    return normalized
+
+
+def _normalize_optional_hosted_invite_meta(value: str | None) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+class HostedInviteCode(BaseModel):
+    code: str = Field(min_length=1, max_length=100)
+    label: str | None = Field(default=None, max_length=100)
+    channel: str | None = Field(default=None, max_length=100)
+    invite_batch: str | None = Field(default=None, max_length=100)
+
+    @field_validator("code")
+    @classmethod
+    def _normalize_code(cls, value: str) -> str:
+        return normalize_hosted_invite_code(value)
+
+    @field_validator("label", "channel", "invite_batch", mode="before")
+    @classmethod
+    def _normalize_optional_fields(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return _normalize_optional_hosted_invite_meta(value)
+        return value
+
+
 class Settings(BaseSettings):
     # Runtime environment (used for production security/logging gates).
     # Canonicalized via `normalized_environment`.
     environment: str = "dev"
 
     deploy_mode: Literal["hosted", "selfhost"] = "selfhost"
-
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com/v1"
-    deepseek_model: str = "deepseek-chat"
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
@@ -39,7 +69,6 @@ class Settings(BaseSettings):
     db_auto_create: bool = False
 
     max_context_chapters: int = DEFAULT_CONTEXT_CHAPTERS
-    outline_chunk_size: int = 100
     default_continuation_tokens: int = 4000
     max_continuation_tokens: int = 16000
     continuation_min_target_ratio: float = 0.9
@@ -54,11 +83,8 @@ class Settings(BaseSettings):
     world_generation_chunk_max_tokens: int = 15000
 
     # Bootstrap
-    bootstrap_window_size: int = 500
-    bootstrap_window_step: int = 250
-    bootstrap_min_window_count: int = 3
-    bootstrap_min_window_ratio: float = 0.005
     bootstrap_llm_temperature: float = 0.3
+    bootstrap_llm_timeout_seconds: int = 120
     bootstrap_max_candidates: int = 500
     bootstrap_common_words_dir: str = "data/common_words"
     bootstrap_stale_job_timeout_seconds: int = 900
@@ -67,13 +93,17 @@ class Settings(BaseSettings):
     derived_asset_job_lease_seconds: int = 300
     derived_asset_job_stale_timeout_seconds: int = 900
 
+    # Ingest/import jobs and long-file policy
+    ingest_job_lease_seconds: int = 300
+    ingest_job_stale_timeout_seconds: int = 900
+    ingest_large_source_bytes: int = 2 * 1024 * 1024
+    ingest_large_source_chars: int = 400_000
+    ingest_large_chapter_count: int = 120
+    hosted_job_worker_poll_seconds: float = 2.0
+
     # Lorebook Configuration
     lore_max_total_tokens: int = 2000
     lore_default_priority: int = 100
-    lore_protagonist_priority: int = 1
-    lore_item_priority: int = 50
-    lore_location_priority: int = 75
-    lore_faction_priority: int = 80
     lore_default_token_budget: int = 500
 
     # CORS
@@ -85,14 +115,19 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 1440
 
     # Hosted mode: auth & quota
-    invite_code: str = ""
+    hosted_invite_codes: list[HostedInviteCode] = Field(default_factory=list)
     github_oauth_client_id: str = ""
     github_oauth_client_secret: str = ""
     github_oauth_redirect_uri: str = ""
+    hosted_github_login_enabled: bool = False
     initial_quota: int = 5
     feedback_bonus_quota: int = 20
     feedback_suggestion_bonus_quota: int = 10
     hosted_max_users: int = 0
+
+    # Upload/import
+    upload_max_megabytes: int = 30
+    upload_chunk_size_bytes: int = 1024 * 1024
 
     # Hosted/server-side AI safety fuses
     ai_manual_disable: bool = False
@@ -105,8 +140,12 @@ class Settings(BaseSettings):
     hosted_llm_api_key: str = ""
     hosted_llm_model: str = ""
 
-    # Concurrency: max simultaneous LLM API calls (semaphore-based)
+    # Concurrency: interactive LLM calls share a global fail-fast gate.
+    # Background jobs additionally flow through a narrower blocking lane so
+    # bootstrap/refinement traffic cannot crowd out foreground continuation.
     max_concurrent_llm_calls: int = 50
+    max_background_concurrent_llm_calls: int = 1
+    generation_run_stale_timeout_seconds: int = 900
 
     # Copilot admission control
     copilot_max_runs_per_session: int = 1
@@ -132,9 +171,49 @@ class Settings(BaseSettings):
     def normalized_environment(self) -> str:
         return (self.environment or "dev").strip().lower()
 
+    @field_validator("hosted_invite_codes", mode="before")
+    @classmethod
+    def _parse_hosted_invite_codes(cls, value: object) -> object:
+        if value in (None, ""):
+            return []
+        if isinstance(value, str):
+            parsed = json.loads(value)
+            return parsed if parsed is not None else []
+        return value
+
     @property
     def is_production(self) -> bool:
         return self.normalized_environment in {"production", "prod"}
+
+    @property
+    def hosted_invite_code_entries(self) -> tuple[HostedInviteCode, ...]:
+        entries = tuple(self.hosted_invite_codes)
+        seen_codes: set[str] = set()
+        for entry in entries:
+            if entry.code in seen_codes:
+                raise RuntimeError("hosted_invite_codes contains duplicate invite codes")
+            seen_codes.add(entry.code)
+        return entries
+
+    @property
+    def hosted_invite_code_lookup(self) -> dict[str, HostedInviteCode]:
+        return {entry.code: entry for entry in self.hosted_invite_code_entries}
+
+    @property
+    def hosted_invite_login_enabled(self) -> bool:
+        return bool(self.hosted_invite_code_entries)
+
+    @model_validator(mode="after")
+    def _validate_llm_concurrency(self) -> "Settings":
+        if int(self.max_concurrent_llm_calls) < 1:
+            raise ValueError("max_concurrent_llm_calls must be >= 1")
+        if int(self.max_background_concurrent_llm_calls) < 1:
+            raise ValueError("max_background_concurrent_llm_calls must be >= 1")
+        if int(self.max_background_concurrent_llm_calls) > int(self.max_concurrent_llm_calls):
+            raise ValueError(
+                "max_background_concurrent_llm_calls cannot exceed max_concurrent_llm_calls"
+            )
+        return self
 
     @classmethod
     def settings_customise_sources(

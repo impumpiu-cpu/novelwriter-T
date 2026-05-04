@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildStudioHostPath,
-  buildResultsCompatibilityPath,
   parseNovelShellRouteState,
   readAtlasStudioOriginSearchParams,
   readNovelShellArtifactPanelSearchParams,
   readResultsProvenanceSearchParams,
+  readWorldEntryHandoffSearchParams,
+  readWorldEntryPendingSearchParams,
   setAtlasStudioOriginSearchParams,
   setAtlasReviewKindSearchParams,
   setNovelShellArtifactPanelSearchParams,
   setAtlasSuggestionTargetSearchParams,
   setResultsProvenanceSearchParams,
+  setWorldEntryHandoffSearchParams,
+  setWorldEntryPendingSearchParams,
   setAtlasTabSearchParams,
   setStudioChapterSearchParams,
   setStudioEntityStageSearchParams,
@@ -46,20 +49,6 @@ describe('NovelShellRouteState', () => {
       entityId: 9,
       relationshipId: 17,
       worldTab: 'relationships',
-    })
-  })
-
-  it('parses compatibility results routes into studio shell state', () => {
-    const state = parseNovelShellRouteState('/novel/17/chapter/3/results?entity=88')
-
-    expect(state).toMatchObject({
-      surface: 'studio',
-      stage: 'results',
-      entry: 'results_compat',
-      novelId: 17,
-      chapterNum: 3,
-      entityId: 88,
-      worldTab: null,
     })
   })
 
@@ -172,7 +161,7 @@ describe('NovelShellRouteState', () => {
     expect(resultsParams.get('chapter')).toBe('7')
   })
 
-  it('round-trips structured results provenance and rebuilds the compatibility route', () => {
+  it('round-trips structured results provenance through the studio host route', () => {
     const provenanceParams = setResultsProvenanceSearchParams(new URLSearchParams('stage=entity&entity=9'), {
       chapterNum: 3,
       continuations: '0:15,1:16',
@@ -189,17 +178,13 @@ describe('NovelShellRouteState', () => {
       continuations: '0:15,1:16',
       totalVariants: 2,
     })
-
-    expect(buildResultsCompatibilityPath(7, provenance!)).toBe(
-      '/novel/7/chapter/3/results?continuations=0%3A15%2C1%3A16&total_variants=2',
-    )
   })
 
-  it('round-trips the shell artifact panel state across studio/results compatibility paths', () => {
-    const panelParams = setNovelShellArtifactPanelSearchParams(
-      new URLSearchParams('chapter=3'),
-      { panel: 'injection_summary', injectionCategory: 'relationships' },
-    )
+  it('round-trips the shell artifact panel state across the studio host route', () => {
+    const panelParams = setNovelShellArtifactPanelSearchParams(new URLSearchParams('chapter=3'), {
+      panel: 'injection_summary',
+      injectionCategory: 'relationships',
+    })
 
     expect(panelParams.get('artifactPanel')).toBe('injection_summary')
     expect(panelParams.get('summaryCategory')).toBe('relationships')
@@ -208,16 +193,22 @@ describe('NovelShellRouteState', () => {
       injectionCategory: 'relationships',
     })
 
-    expect(buildResultsCompatibilityPath(7, {
+    expect(buildStudioHostPath(7, {
+      stage: 'results',
       chapterNum: 3,
-      continuations: '0:15,1:16',
-      totalVariants: 2,
-    }, {
-      panel: 'injection_summary',
-      injectionCategory: 'relationships',
-    })).toBe(
-      '/novel/7/chapter/3/results?continuations=0%3A15%2C1%3A16&total_variants=2&artifactPanel=injection_summary&summaryCategory=relationships',
-    )
+      entityId: null,
+      systemId: null,
+      reviewKind: null,
+      resultsProvenance: {
+        chapterNum: 3,
+        continuations: '0:15,1:16',
+        totalVariants: 2,
+      },
+      artifactPanelState: {
+        panel: 'injection_summary',
+        injectionCategory: 'relationships',
+      },
+    })).toBe('/novel/7?stage=results&chapter=3&continuations=0%3A15%2C1%3A16&total_variants=2&artifactPanel=injection_summary&summaryCategory=relationships')
   })
 
   it('round-trips structured studio origin through atlas params and rebuilds the studio host path', () => {
@@ -300,6 +291,79 @@ describe('NovelShellRouteState', () => {
       chapterNum: 7,
       worldTab: null,
     })
+  })
+
+  it('round-trips world-entry handoff params for browser-back continuity', () => {
+    const params = setWorldEntryHandoffSearchParams(
+      new URLSearchParams('chapter=7'),
+      {
+        kind: 'generate_review',
+        entityCount: 1,
+        relationshipCount: 0,
+        systemCount: 2,
+      },
+    )
+
+    expect(params.get('worldEntryHandoff')).toBe('generate_review')
+    expect(params.get('worldEntryEntities')).toBe('1')
+    expect(params.get('worldEntryRelationships')).toBe('0')
+    expect(params.get('worldEntrySystems')).toBe('2')
+    expect(readWorldEntryHandoffSearchParams(params)).toEqual({
+      kind: 'generate_review',
+      entityCount: 1,
+      relationshipCount: 0,
+      systemCount: 2,
+    })
+
+    const cleared = setWorldEntryHandoffSearchParams(params, null)
+    expect(cleared.get('worldEntryHandoff')).toBeNull()
+    expect(cleared.get('worldEntryEntities')).toBeNull()
+    expect(cleared.get('worldEntrySystems')).toBeNull()
+  })
+
+  it('normalizes zero-count review handoffs into success handoffs', () => {
+    expect(readWorldEntryHandoffSearchParams(new URLSearchParams(
+      'worldEntryHandoff=extract_review&worldEntryEntities=0&worldEntryRelationships=0',
+    ))).toEqual({
+      kind: 'extract_success',
+      entityCount: 0,
+      relationshipCount: 0,
+      systemCount: null,
+    })
+
+    expect(readWorldEntryHandoffSearchParams(new URLSearchParams(
+      'worldEntryHandoff=generate_review&worldEntryEntities=0&worldEntryRelationships=0&worldEntrySystems=0',
+    ))).toEqual({
+      kind: 'generate_success',
+      entityCount: 0,
+      relationshipCount: 0,
+      systemCount: 0,
+    })
+  })
+
+  it('round-trips pending world-entry params so async completion can upgrade later', () => {
+    const params = setWorldEntryPendingSearchParams(
+      new URLSearchParams('chapter=7'),
+      {
+        kind: 'extract',
+        startedAtMs: 1_742_000_000_000,
+        jobId: 41,
+      },
+    )
+
+    expect(params.get('worldEntryPending')).toBe('extract')
+    expect(params.get('worldEntryPendingAt')).toBe('1742000000000')
+    expect(params.get('worldEntryPendingJob')).toBe('41')
+    expect(readWorldEntryPendingSearchParams(params)).toEqual({
+      kind: 'extract',
+      startedAtMs: 1_742_000_000_000,
+      jobId: 41,
+    })
+
+    const cleared = setWorldEntryPendingSearchParams(params, null)
+    expect(cleared.get('worldEntryPending')).toBeNull()
+    expect(cleared.get('worldEntryPendingAt')).toBeNull()
+    expect(cleared.get('worldEntryPendingJob')).toBeNull()
   })
 
   it('does not parse the removed legacy write route', () => {

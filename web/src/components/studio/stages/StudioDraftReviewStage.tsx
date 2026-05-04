@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import { ArrowLeft, Compass } from 'lucide-react'
+import { AssistToggleButton } from '@/components/studio/AssistToggleButton'
 import { useUiLocale } from '@/contexts/UiLocaleContext'
 import { DraftReviewNavigator } from '@/components/atlas/review/DraftReviewNavigator'
 import type { DraftReviewKind } from '@/components/atlas/review/DraftReviewSummaryCard'
@@ -14,7 +15,10 @@ export function StudioDraftReviewStage({
   onOpenRelationships,
   onOpenSystem,
   onOpenAtlas,
+  onWarmAtlas,
   onReturnToArtifact,
+  assistOpen,
+  onToggleAssist,
 }: {
   novelId: number
   reviewKind: DraftReviewKind
@@ -23,7 +27,10 @@ export function StudioDraftReviewStage({
   onOpenRelationships: (entityId: number) => void
   onOpenSystem: (systemId: number) => void
   onOpenAtlas: () => void
+  onWarmAtlas?: () => void
   onReturnToArtifact?: () => void
+  assistOpen?: boolean
+  onToggleAssist?: () => void
 }) {
   const { t } = useUiLocale()
   const [reviewSearch, setReviewSearch] = useState('')
@@ -65,12 +72,15 @@ export function StudioDraftReviewStage({
             ) : null}
             <NwButton
               onClick={onOpenAtlas}
+              onMouseEnter={onWarmAtlas}
+              onFocus={onWarmAtlas}
               variant="accentOutline"
               className="rounded-[10px] px-4 py-2 text-sm font-medium"
             >
               <Compass size={14} />
               {t('studio.stage.openInAtlas')}
             </NwButton>
+            {onToggleAssist ? <AssistToggleButton active={assistOpen} onClick={onToggleAssist} /> : null}
           </div>
         </div>
       </div>

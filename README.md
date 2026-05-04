@@ -204,6 +204,7 @@ scripts/uv_run.sh uvicorn app.main:app --reload --port 8000
 ```
 
 项目使用 `pyproject.toml` + `uv.lock` + repo-local `.venv` 作为唯一 Python 依赖真相源，默认 Python 版本见 [`.python-version`](.python-version)。
+`scripts/setup_python_env.sh` 会自动确保必需的 `_novwr_state_proto` Rust 扩展已安装；如果本机缺少 Rust toolchain，会直接失败并给出修复提示，而不是把问题拖到导入小说时才暴露。
 
 运行后端单元测试：
 
@@ -215,23 +216,56 @@ scripts/uv_run.sh pytest tests/
 
 ```bash
 cd web
-npm install
+npm ci
 npm run dev
 ```
 
 前端开发服务器运行在：`http://localhost:5173`。
+日常开发与 CI 都应优先使用 `npm ci`，确保安装结果严格遵循 `package-lock.json`，避免无意间漂移到未审计的新依赖版本。
 
 ---
 
 ## ⚙️ 环境变量配置
 
+### Selfhost 常用
+
 | 变量名 | 是否必填 | 说明 |
 |---|---|---|
-| `OPENAI_API_KEY` | **是** | LLM API 密钥 |
-| `OPENAI_BASE_URL` | 否 | API 请求地址（如使用代理或中转服务） |
-| `OPENAI_MODEL` | 否 | 默认使用的模型 ID |
-| `JWT_SECRET_KEY` | 生产必填 | 用于身份验证的 JWT 签名密钥 |
-| `DATABASE_URL` | 否 | 数据库连接地址，默认使用 SQLite |
+| `OPENAI_API_KEY` | **是（启用 AI 时）** | selfhost 默认使用的 LLM API 密钥 |
+| `OPENAI_BASE_URL` | 否 | OpenAI 兼容网关地址 |
+| `OPENAI_MODEL` | 否 | 默认模型 ID |
+| `MAX_CONTEXT_CHAPTERS` | 否 | 续写时注入的最近章节数上限 |
+| `DEFAULT_CONTINUATION_TOKENS` | 否 | 默认续写 token 上限 |
+| `JWT_SECRET_KEY` | 生产必填 | JWT 签名密钥 |
+| `DATABASE_URL` | 否 | 数据库连接地址；默认 SQLite |
+| `CORS_ALLOWED_ORIGINS` | 否 | JSON 数组格式的允许来源 |
+
+### Hosted 常用
+
+| 变量名 | 是否必填 | 说明 |
+|---|---|---|
+| `DEPLOY_MODE=hosted` | **是** | 开启 hosted 行为分支 |
+| `HOSTED_INVITE_CODES` | 视接入方式而定 | invite 激活码 roster |
+| `HOSTED_LLM_BASE_URL` | **建议显式配置** | hosted 平台自有 LLM 网关地址 |
+| `HOSTED_LLM_API_KEY` | **建议显式配置** | hosted 平台自有 LLM 密钥 |
+| `HOSTED_LLM_MODEL` | **建议显式配置** | hosted 平台自有模型 ID |
+| `HOSTED_GITHUB_LOGIN_ENABLED` | 否 | 是否公开显示 GitHub OAuth 登录入口 |
+| `HOSTED_MAX_USERS` | 否 | hosted 最大活跃用户数硬上限 |
+| `AI_MANUAL_DISABLE` | 否 | 手动关闭所有 AI 能力 |
+| `AI_HARD_STOP_USD` | 否 | 按估算成本触发 hosted AI 硬停 |
+| `ENABLE_EVENT_TRACKING` | 否 | 是否启用 hosted 产品事件埋点 |
+| `ENABLE_DEBUG_ENDPOINTS` | 否 | 是否启用调试端点 |
+
+### Bootstrap / 成本调优
+
+| 变量名 | 是否必填 | 说明 |
+|---|---|---|
+| `BOOTSTRAP_LLM_TIMEOUT_SECONDS` | 否 | bootstrap LLM refine 超时 |
+| `BOOTSTRAP_MAX_CANDIDATES` | 否 | bootstrap 候选上限 |
+| `LLM_DEFAULT_INPUT_COST_PER_MILLION_USD` | 否 | hosted 成本估算输入单价 |
+| `LLM_DEFAULT_OUTPUT_COST_PER_MILLION_USD` | 否 | hosted 成本估算输出单价 |
+
+> Hosted 关键点：后台任务（例如 bootstrap）优先读取 `HOSTED_LLM_*`，不要只配 `OPENAI_*` 就假设 hosted worker 会自动正确接管。
 
 更多详细配置请参考 [`.env.example`](.env.example)。
 

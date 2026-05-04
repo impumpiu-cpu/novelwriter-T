@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Sequence
 
 try:
     import msgpack
 except ImportError:  # pragma: no cover - fallback for environments without msgpack
     msgpack = None
+
+
+WINDOW_INDEX_COMPACT_FORMAT_VERSION = 2
 
 
 @dataclass(slots=True)
@@ -30,6 +33,15 @@ class WindowRef:
             "entity_count": self.entity_count,
         }
 
+    def to_compact(self) -> list[int]:
+        return [
+            self.window_id,
+            self.chapter_id,
+            self.start_pos,
+            self.end_pos,
+            self.entity_count,
+        ]
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WindowRef":
         return cls(
@@ -38,6 +50,20 @@ class WindowRef:
             start_pos=int(data["start_pos"]),
             end_pos=int(data["end_pos"]),
             entity_count=int(data["entity_count"]),
+        )
+
+    @classmethod
+    def from_payload(cls, data: Mapping[str, Any] | Sequence[Any]) -> "WindowRef":
+        if isinstance(data, Mapping):
+            return cls.from_dict(dict(data))
+        if not isinstance(data, Sequence) or len(data) != 5:
+            raise ValueError(f"Unexpected WindowRef payload: {data!r}")
+        return cls(
+            window_id=int(data[0]),
+            chapter_id=int(data[1]),
+            start_pos=int(data[2]),
+            end_pos=int(data[3]),
+            entity_count=int(data[4]),
         )
 
 
@@ -67,15 +93,22 @@ class NovelIndex:
         cooccurrence = [ref for ref in windows_a if ref.window_id in windows_b_ids]
         return self._sorted_windows(cooccurrence)[:limit]
 
+    @staticmethod
+    def build_window_entities(
+        entity_windows: Mapping[str, Iterable[WindowRef]],
+    ) -> dict[int, set[str]]:
+        window_entities: dict[int, set[str]] = {}
+        for entity_name, windows in entity_windows.items():
+            for window in windows:
+                window_entities.setdefault(int(window.window_id), set()).add(str(entity_name))
+        return window_entities
+
     def to_msgpack(self) -> bytes:
         payload = {
-            "entity_windows": {
-                name: [window.to_dict() for window in windows]
+            "v": WINDOW_INDEX_COMPACT_FORMAT_VERSION,
+            "e": {
+                name: [window.to_compact() for window in windows]
                 for name, windows in self.entity_windows.items()
-            },
-            "window_entities": {
-                str(window_id): sorted(entities)
-                for window_id, entities in self.window_entities.items()
             },
         }
         if msgpack is not None:
@@ -89,12 +122,30 @@ class NovelIndex:
         else:
             payload = json.loads(data.decode("utf-8"))
 
-        entity_windows = {
-            str(name): [WindowRef.from_dict(window) for window in windows]
-            for name, windows in payload.get("entity_windows", {}).items()
-        }
-        window_entities = {
-            int(window_id): set(entities)
-            for window_id, entities in payload.get("window_entities", {}).items()
-        }
+        if isinstance(payload, Mapping) and payload.get("kind") == "state_proto":
+            from .state_proto_runtime import StateProtoIndex
+
+            return StateProtoIndex.from_msgpack(data).to_window_index_compat()
+
+        compact_entity_windows = payload.get("e")
+        if isinstance(compact_entity_windows, Mapping):
+            entity_windows = {
+                str(name): [WindowRef.from_payload(window) for window in windows]
+                for name, windows in compact_entity_windows.items()
+            }
+            raw_window_entities = payload.get("w")
+        else:
+            entity_windows = {
+                str(name): [WindowRef.from_payload(window) for window in windows]
+                for name, windows in payload.get("entity_windows", {}).items()
+            }
+            raw_window_entities = payload.get("window_entities")
+
+        if isinstance(raw_window_entities, Mapping) and raw_window_entities:
+            window_entities = {
+                int(window_id): set(entities)
+                for window_id, entities in raw_window_entities.items()
+            }
+        else:
+            window_entities = cls.build_window_entities(entity_windows)
         return cls(entity_windows=entity_windows, window_entities=window_entities)

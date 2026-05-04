@@ -7,9 +7,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import StaticPool, create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.core.bootstrap import run_bootstrap_job
+from app.config import Settings
+from app.core.bootstrap import build_bootstrap_trigger_result, run_bootstrap_job
 from app.database import Base, get_db
-from app.models import Chapter, Novel, User, WorldEntity, WorldRelationship
+from app.models import BootstrapJob, Chapter, Novel, User, WorldEntity, WorldRelationship
 
 
 engine = create_engine(
@@ -69,10 +70,21 @@ def client(db, monkeypatch):
         finally:
             pass
 
-    test_app.dependency_overrides[get_db] = override_get_db
-    test_app.dependency_overrides[world.get_current_user_or_default] = lambda: User(
-        id=1, username="tester", hashed_password="x", role="admin", is_active=True
+    user = User(
+        id=1,
+        username="tester",
+        hashed_password="x",
+        role="admin",
+        is_active=True,
+        generation_quota=5,
+        feedback_submitted=False,
     )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    test_app.dependency_overrides[get_db] = override_get_db
+    test_app.dependency_overrides[world.get_current_user_or_default] = lambda: user
 
     with TestClient(test_app) as c:
         yield c
@@ -80,7 +92,13 @@ def client(db, monkeypatch):
 
 
 def _create_novel_with_text(db) -> Novel:
-    novel = Novel(title="Integration Bootstrap", author="Tester", file_path="/tmp/test.txt", total_chapters=1)
+    novel = Novel(
+        title="Integration Bootstrap",
+        author="Tester",
+        file_path="/tmp/test.txt",
+        total_chapters=1,
+        owner_id=1,
+    )
     db.add(novel)
     db.commit()
     db.refresh(novel)
@@ -111,6 +129,115 @@ def test_bootstrap_forwards_byok_headers_to_background_job(client, db):
         "model": "test-model",
         "billing_source_hint": "selfhost",
     }
+
+
+def test_hosted_bootstrap_queues_for_worker_instead_of_launching_inline(client, db):
+    import app.config as config_mod
+
+    novel = _create_novel_with_text(db)
+
+    prev = config_mod._settings_instance
+    config_mod._settings_instance = Settings(deploy_mode="hosted", _env_file=None)
+    try:
+        response = client.post(
+            f"/api/novels/{novel.id}/world/bootstrap",
+            json={"mode": "initial"},
+        )
+        assert response.status_code == 202
+        assert client.app.state._bootstrap_task_capture == {}
+    finally:
+        config_mod._settings_instance = prev
+
+
+def test_hosted_bootstrap_default_trigger_fast_fails_when_index_is_already_fresh(client, db):
+    import app.config as config_mod
+
+    novel = _create_novel_with_text(db)
+    novel.window_index_revision = 1
+    novel.window_index_built_revision = 1
+    novel.window_index_status = "fresh"
+    job = BootstrapJob(
+        novel_id=novel.id,
+        mode="initial",
+        initialized=True,
+        status="completed",
+        progress={"step": 4, "detail": "bootstrap completed"},
+        result={**build_bootstrap_trigger_result(mode="initial", user_id=1), "initialized": True},
+    )
+    db.add(job)
+    db.commit()
+
+    prev = config_mod._settings_instance
+    config_mod._settings_instance = Settings(deploy_mode="hosted", _env_file=None)
+    try:
+        response = client.post(f"/api/novels/{novel.id}/world/bootstrap")
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "bootstrap_index_already_fresh"
+        assert client.app.state._bootstrap_task_capture == {}
+    finally:
+        config_mod._settings_instance = prev
+
+
+def test_hosted_bootstrap_does_not_require_generation_quota(client, db):
+    import app.config as config_mod
+
+    novel = _create_novel_with_text(db)
+    user = db.get(User, 1)
+    assert user is not None
+    user.generation_quota = 0
+    db.commit()
+
+    prev = config_mod._settings_instance
+    config_mod._settings_instance = Settings(deploy_mode="hosted", _env_file=None)
+    try:
+        response = client.post(
+            f"/api/novels/{novel.id}/world/bootstrap",
+            json={"mode": "initial"},
+        )
+        assert response.status_code == 202
+        db.refresh(user)
+        assert user.generation_quota == 0
+    finally:
+        config_mod._settings_instance = prev
+
+
+def test_hosted_worker_claims_bootstrap_job_and_uses_trigger_user(db):
+    from app.core.world import bootstrap_application as bootstrap_app
+
+    novel = _create_novel_with_text(db)
+    job = BootstrapJob(
+        novel_id=novel.id,
+        mode="initial",
+        status="pending",
+        progress={"step": 0, "detail": "queued"},
+        result=build_bootstrap_trigger_result(mode="initial", user_id=7),
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    observed: list[dict[str, object]] = []
+
+    async def _runner(job_id: int, *, session_factory, user_id=None, llm_config=None):
+        observed.append(
+            {
+                "job_id": job_id,
+                "user_id": user_id,
+                "llm_config": llm_config,
+                "session_factory": session_factory,
+            }
+        )
+
+    did_work = bootstrap_app.run_next_bootstrap_job(
+        session_factory=TestingSessionLocal,
+        settings=Settings(deploy_mode="hosted", _env_file=None),
+        background_job_runner=_runner,
+    )
+
+    assert did_work is True
+    assert observed[0]["job_id"] == job.id
+    assert observed[0]["user_id"] == 7
+    assert observed[0]["llm_config"] is None
 
 
 def test_reextract_merge_endpoint_and_job_flow(client, db):

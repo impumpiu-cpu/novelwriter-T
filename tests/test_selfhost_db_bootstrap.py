@@ -25,6 +25,80 @@ def sqlite_engine(tmp_path: Path):
         engine.dispose()
 
 
+def _degrade_schema_from_036_to_035(conn) -> None:
+    conn.execute(sa.text("DROP TABLE world_generation_runs"))
+    conn.execute(sa.text("ALTER TABLE continuation_runs RENAME TO continuation_runs_old"))
+    conn.execute(
+        sa.text(
+            """
+            CREATE TABLE continuation_runs (
+                id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                novel_id INTEGER NOT NULL,
+                client_request_id VARCHAR(64) NOT NULL,
+                request_hash VARCHAR(64) NOT NULL,
+                claim_token VARCHAR(64) NOT NULL,
+                status VARCHAR(20) NOT NULL,
+                delivered_count INTEGER NOT NULL,
+                continuation_ids JSON,
+                debug_summary JSON,
+                error_code VARCHAR(64),
+                error_message TEXT,
+                completed_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                CONSTRAINT uq_continuation_runs_user_novel_request UNIQUE (user_id, novel_id, client_request_id),
+                FOREIGN KEY(user_id) REFERENCES users (id),
+                FOREIGN KEY(novel_id) REFERENCES novels (id)
+            )
+            """
+        )
+    )
+    conn.execute(
+        sa.text(
+            """
+            INSERT INTO continuation_runs (
+                id,
+                user_id,
+                novel_id,
+                client_request_id,
+                request_hash,
+                claim_token,
+                status,
+                delivered_count,
+                continuation_ids,
+                debug_summary,
+                error_code,
+                error_message,
+                completed_at,
+                created_at,
+                updated_at
+            )
+            SELECT
+                id,
+                user_id,
+                novel_id,
+                client_request_id,
+                request_hash,
+                claim_token,
+                status,
+                delivered_count,
+                continuation_ids,
+                debug_summary,
+                error_code,
+                error_message,
+                completed_at,
+                created_at,
+                updated_at
+            FROM continuation_runs_old
+            """
+        )
+    )
+    conn.execute(sa.text("DROP TABLE continuation_runs_old"))
+    conn.execute(sa.text("CREATE INDEX ix_continuation_runs_novel_status ON continuation_runs (novel_id, status)"))
+
+
 def test_bootstraps_fresh_database_and_stamps_head(sqlite_engine):
     engine, db_url = sqlite_engine
     calls: list[tuple[str, str]] = []
@@ -83,6 +157,20 @@ def test_stamps_current_unversioned_schema(sqlite_engine):
 
     assert result == "stamped"
     assert calls == [("stamp", "head")]
+
+
+def test_fresh_schema_preserves_auth_and_quota_user_not_null_invariants(sqlite_engine):
+    engine, _db_url = sqlite_engine
+    Base.metadata.create_all(bind=engine)
+
+    inspector = sa.inspect(engine)
+    auth_columns = {column["name"]: column for column in inspector.get_columns("auth_identities")}
+    quota_columns = {column["name"]: column for column in inspector.get_columns("quota_reservations")}
+    user_event_columns = {column["name"]: column for column in inspector.get_columns("user_events")}
+
+    assert auth_columns["user_id"]["nullable"] is False
+    assert quota_columns["user_id"]["nullable"] is False
+    assert user_event_columns["user_id"]["nullable"] is True
 
 
 def test_auto_upgrades_unversioned_schema_missing_only_novel_language(sqlite_engine):
@@ -160,6 +248,48 @@ def test_auto_upgrades_unversioned_schema_missing_only_derived_asset_jobs(sqlite
     assert calls == [("stamp", "029"), ("upgrade", "head")]
 
 
+def test_auto_upgrades_unversioned_schema_missing_only_continuation_semantic_admission(sqlite_engine):
+    engine, db_url = sqlite_engine
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        _degrade_schema_from_036_to_035(conn)
+
+    calls: list[tuple[str, str]] = []
+
+    result = ensure_selfhost_database_ready(
+        db_engine=engine,
+        metadata=Base.metadata,
+        db_url=db_url,
+        stamp_fn=lambda _config, revision: calls.append(("stamp", revision)),
+        upgrade_fn=lambda _config, revision: calls.append(("upgrade", revision)),
+    )
+
+    assert result == "upgraded"
+    assert calls == [("stamp", "035"), ("upgrade", "head")]
+
+
+def test_repairs_partial_versioned_upgrade_when_schema_is_already_at_later_baseline(sqlite_engine):
+    engine, db_url = sqlite_engine
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        _degrade_schema_from_036_to_035(conn)
+        conn.execute(sa.text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        conn.execute(sa.text("INSERT INTO alembic_version (version_num) VALUES ('031')"))
+
+    calls: list[tuple[str, str]] = []
+
+    result = ensure_selfhost_database_ready(
+        db_engine=engine,
+        metadata=Base.metadata,
+        db_url=db_url,
+        stamp_fn=lambda _config, revision: calls.append(("stamp", revision)),
+        upgrade_fn=lambda _config, revision: calls.append(("upgrade", revision)),
+    )
+
+    assert result == "upgraded"
+    assert calls == [("stamp", "035"), ("upgrade", "head")]
+
+
 def test_matches_unversioned_baseline_for_chapter_source_metadata():
     missing_columns = {
         "auth_identities": {
@@ -205,9 +335,9 @@ def test_upgrades_versioned_schema(sqlite_engine):
         db_engine=engine,
         metadata=Base.metadata,
         db_url=db_url,
-        stamp_fn=lambda *_args: pytest.fail("stamp should not run for a versioned database"),
+        stamp_fn=lambda _config, revision: calls.append(("stamp", revision)),
         upgrade_fn=lambda _config, revision: calls.append(("upgrade", revision)),
     )
 
     assert result == "upgraded"
-    assert calls == [("upgrade", "head")]
+    assert calls == [("stamp", "035"), ("upgrade", "head")]

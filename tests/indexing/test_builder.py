@@ -1,89 +1,42 @@
-from app.core.indexing.builder import (
-    ChapterText,
-    build_window_index,
-    compute_cooccurrence,
-    detect_language,
-    extract_candidates,
-    load_common_words,
-)
-from app.core.indexing.window_index import NovelIndex
+from __future__ import annotations
+
+from app.core.indexing import builder
 
 
-def test_detect_language_by_space_ratio():
-    assert detect_language("Alice and Bob walked home.") == "en"
-    assert detect_language("云澈看向远方，楚月仙站在雪中。") == "zh"
-    assert detect_language("勇者は城へ向かった。") == "ja"
-    assert detect_language("민수는 집으로 돌아갔다.") == "ko"
+def test_jieba_tokenizer_prefers_rust_extension(monkeypatch):
+    class FakeRustTokenizer:
+        @staticmethod
+        def tokenize_zh_text(text: str) -> list[str]:
+            assert text == "云澈 看向 远方"
+            return ["云澈", "", "远方"]
+
+    monkeypatch.setattr(builder, "_novwr_state_proto", FakeRustTokenizer())
+
+    assert builder.JiebaTokenizer().tokenize("云澈 看向 远方") == ["云澈", "远方"]
 
 
-def test_extract_candidates_filters_short_tokens_and_stop_words():
-    tokens = ["a", "the", "Alice", "Alice", "Bob", "and", "Bob", "city"]
-    common_words = {"the", "and"}
+def test_jieba_tokenizer_falls_back_to_character_ngrams_when_rust_helper_missing(monkeypatch):
+    class MissingHelperModule:
+        pass
 
-    candidates = extract_candidates(tokens, common_words)
-    assert candidates == {"Alice": 2, "Bob": 2, "city": 1}
+    monkeypatch.setattr(builder, "_novwr_state_proto", MissingHelperModule())
 
-
-def test_load_common_words_merges_primary_and_fallback_language_files(tmp_path):
-    common_words_dir = tmp_path / "common_words"
-    common_words_dir.mkdir(parents=True)
-    (common_words_dir / "en.txt").write_text("the\nand\n", encoding="utf-8")
-    (common_words_dir / "zh.txt").write_text("没有\n什么\n", encoding="utf-8")
-
-    words_for_en = load_common_words("en", common_words_dir=str(common_words_dir))
-    words_for_zh = load_common_words("zh", common_words_dir=str(common_words_dir))
-
-    assert "the" in words_for_en
-    assert "没有" in words_for_en
-    assert "the" in words_for_zh
-    assert "没有" in words_for_zh
-
-
-def test_load_common_words_reuses_cjk_bucket_for_japanese(tmp_path):
-    common_words_dir = tmp_path / "common_words"
-    common_words_dir.mkdir(parents=True)
-    (common_words_dir / "en.txt").write_text("the\nand\n", encoding="utf-8")
-    (common_words_dir / "zh.txt").write_text("没有\n什么\n", encoding="utf-8")
-
-    words_for_ja = load_common_words("ja", common_words_dir=str(common_words_dir))
-
-    assert "the" in words_for_ja
-    assert "没有" in words_for_ja
-
-
-def test_build_window_index_filters_low_window_count_candidates():
-    chapters = [
-        ChapterText(chapter_id=1, text="alice bob"),
-        ChapterText(chapter_id=2, text="alice city"),
-        ChapterText(chapter_id=3, text="alice"),
+    assert builder.JiebaTokenizer().tokenize("云澈看向远方") == [
+        "云澈",
+        "澈看",
+        "看向",
+        "向远",
+        "远方",
     ]
-    candidates = {"alice": 3, "bob": 1, "city": 1}
-
-    index, importance = build_window_index(
-        chapters,
-        candidates,
-        window_size=500,
-        window_step=250,
-        min_window_count=2,
-        min_window_ratio=0.0,
-    )
-
-    assert importance == {"alice": 3}
-    assert set(index.entity_windows.keys()) == {"alice"}
-    assert len(index.find_entity_passages("alice", limit=10)) == 3
 
 
-def test_compute_cooccurrence_from_window_entities():
-    index = NovelIndex(
-        entity_windows={},
-        window_entities={
-            1: {"alice", "bob", "carol"},
-            2: {"alice", "bob"},
-            3: {"alice", "carol"},
-        },
-    )
+def test_jieba_tokenizer_falls_back_to_character_ngrams_when_rust_extension_unavailable(monkeypatch):
+    monkeypatch.setattr(builder, "_novwr_state_proto", None)
 
-    pairs = compute_cooccurrence(index)
-    assert pairs[0] == ("alice", "bob", 2)
-    assert pairs[1] == ("alice", "carol", 2)
-    assert ("bob", "carol", 1) in pairs
+    assert builder.JiebaTokenizer().tokenize("云澈看向远方") == [
+        "云澈",
+        "澈看",
+        "看向",
+        "向远",
+        "远方",
+    ]

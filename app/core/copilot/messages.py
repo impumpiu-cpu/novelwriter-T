@@ -88,6 +88,9 @@ class CopilotTextKey(str, Enum):
 
     TOOL_UNKNOWN_TOOL = "tool_unknown_tool"
     TOOL_UNKNOWN_PACK = "tool_unknown_pack"
+    TOOL_OPEN_MANY_NO_PACKS = "tool_open_many_no_packs"
+    TOOL_OPEN_MANY_TOO_MANY_PACKS = "tool_open_many_too_many_packs"
+    TOOL_OPEN_MANY_FAILED_COUNT = "tool_open_many_failed_count"
     TOOL_ISSUE_MISSING_DESCRIPTION = "tool_issue_missing_description"
     TOOL_ISSUE_NO_ALIASES = "tool_issue_no_aliases"
     TOOL_ISSUE_NO_ATTRIBUTES = "tool_issue_no_attributes"
@@ -217,6 +220,9 @@ _ZH: dict[CopilotTextKey, str] = {
 
     CopilotTextKey.TOOL_UNKNOWN_TOOL: "未知工具：{tool_name}",
     CopilotTextKey.TOOL_UNKNOWN_PACK: "未知线索包：{pack_id}。请先调用 find()。",
+    CopilotTextKey.TOOL_OPEN_MANY_NO_PACKS: "open_many 至少需要 1 个有效的 pack_id。",
+    CopilotTextKey.TOOL_OPEN_MANY_TOO_MANY_PACKS: "open_many 单次最多接受 {max_count} 个不同的 pack_id；请缩小范围后重试。",
+    CopilotTextKey.TOOL_OPEN_MANY_FAILED_COUNT: "open_many 未完全成功：{failed_count}/{requested_count} 个 pack_id 打开失败，请检查 results。",
     CopilotTextKey.TOOL_ISSUE_MISSING_DESCRIPTION: "空描述",
     CopilotTextKey.TOOL_ISSUE_NO_ALIASES: "无别名",
     CopilotTextKey.TOOL_ISSUE_NO_ATTRIBUTES: "无属性",
@@ -324,6 +330,9 @@ _EN: dict[CopilotTextKey, str] = {
 
     CopilotTextKey.TOOL_UNKNOWN_TOOL: "Unknown tool: {tool_name}",
     CopilotTextKey.TOOL_UNKNOWN_PACK: "Unknown pack_id: {pack_id}. Use find() first.",
+    CopilotTextKey.TOOL_OPEN_MANY_NO_PACKS: "open_many requires at least one valid pack_id.",
+    CopilotTextKey.TOOL_OPEN_MANY_TOO_MANY_PACKS: "open_many accepts at most {max_count} unique pack_ids per call. Retry with fewer packs.",
+    CopilotTextKey.TOOL_OPEN_MANY_FAILED_COUNT: "open_many did not fully succeed: {failed_count}/{requested_count} pack_ids failed to open. Check results.",
     CopilotTextKey.TOOL_ISSUE_MISSING_DESCRIPTION: "Missing description",
     CopilotTextKey.TOOL_ISSUE_NO_ALIASES: "No aliases",
     CopilotTextKey.TOOL_ISSUE_NO_ATTRIBUTES: "No attributes",

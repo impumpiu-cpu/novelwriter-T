@@ -20,7 +20,15 @@ interface AuthContextType {
     isLoading: boolean;
     user: User | null;
     login: (username: string, password: string) => Promise<void>;
-    inviteRegister: (inviteCode: string, nickname: string) => Promise<void>;
+    activateInvite: (
+        inviteCode: string,
+        nickname: string,
+        password: string,
+        opts?: {
+            anonymous_id?: string;
+            attribution?: Record<string, string | number | boolean | null>;
+        },
+    ) => Promise<void>;
     logout: () => Promise<void>;
     refreshQuota: () => Promise<void>;
 }
@@ -68,10 +76,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
     };
 
-    const inviteRegister = async (inviteCode: string, nickname: string) => {
+    const activateInvite = async (
+        inviteCode: string,
+        nickname: string,
+        password: string,
+        opts?: {
+            anonymous_id?: string;
+            attribution?: Record<string, string | number | boolean | null>;
+        },
+    ) => {
         setIsLoading(true);
         try {
-            await api.inviteRegister(inviteCode, nickname);
+            await api.activateInvite(inviteCode, nickname, password, opts);
             await probe();
         } catch (error) {
             setIsLoading(false);
@@ -104,7 +120,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     return (
-        <AuthContext.Provider value={{ isLoggedIn: user !== null, isLoading, user, login, inviteRegister, logout, refreshQuota }}>
+        <AuthContext.Provider value={{ isLoggedIn: user !== null, isLoading, user, login, activateInvite, logout, refreshQuota }}>
             {children}
         </AuthContext.Provider>
     );

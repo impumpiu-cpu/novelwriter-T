@@ -1,27 +1,26 @@
 // SPDX-FileCopyrightText: 2026 Isaac.X.Ω.Yuan
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { useState, useRef, useCallback, useMemo, useEffect } from 'react'
+import { lazy, Suspense, useState, useRef, useCallback, useMemo, useEffect } from 'react'
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom'
 import '@/lib/uiMessagePacks/novel'
+import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, Bot } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { AtlasShell } from '@/components/atlas/AtlasShell'
 import { EntityNavigator } from '@/components/atlas/entities/EntityNavigator'
-import { EntityDetail } from '@/components/world-model/entities/EntityDetail'
 import { SystemsWorkspace } from '@/components/atlas/systems/SystemsWorkspace'
 import { RelationshipsTab } from '@/components/world-model/relationships/RelationshipsTab'
-import { DraftReviewTab } from '@/components/world-model/shared/DraftReviewTab'
-import { WorldBuildPanel } from '@/components/world-model/shared/WorldBuildPanel'
 import { DraftReviewSummaryCard, type DraftReviewKind } from '@/components/atlas/review/DraftReviewSummaryCard'
-import { DraftReviewNavigator } from '@/components/atlas/review/DraftReviewNavigator'
 import { RelationshipSidebarPanel } from '@/components/atlas/relationships/RelationshipSidebarPanel'
 import { ArtifactStage } from '@/components/novel-shell/ArtifactStage'
 import { NovelShellLayout } from '@/components/novel-shell/NovelShellLayout'
 import { useNovelShell } from '@/components/novel-shell/NovelShellContext'
 import {
   buildStudioHostPath,
+  readWorldEntryHandoffSearchParams,
+  readWorldEntryPendingSearchParams,
   readAtlasStudioOriginSearchParams,
   setAtlasEntitySearchParams,
   setAtlasHighlightSearchParams,
@@ -29,24 +28,150 @@ import {
   setAtlasReviewKindSearchParams,
   setAtlasSystemSearchParams,
   setAtlasTabSearchParams,
+  setWorldEntryHandoffSearchParams,
+  setWorldEntryPendingSearchParams,
   type AtlasWorkbenchTab,
 } from '@/components/novel-shell/NovelShellRouteState'
 import { useWorldEntities } from '@/hooks/world/useEntities'
 import { useWorldSystems } from '@/hooks/world/useSystems'
+import { useBootstrapStatus } from '@/hooks/world/useBootstrap'
+import { useDraftReviewBacklog } from '@/hooks/world/useDraftReviewBacklog'
 import { LABELS } from '@/constants/labels'
-import { NovelCopilotDrawer } from '@/components/novel-copilot/NovelCopilotDrawer'
+import { NovelCopilotDrawerFallback } from '@/components/novel-copilot/NovelCopilotDrawerFallback'
 import { useNovelCopilot } from '@/components/novel-copilot/NovelCopilotContext'
-import { buildWholeBookCopilotLaunchArgs } from '@/components/novel-copilot/novelCopilotLauncher'
 import { useAtlasCopilotTargetNavigation } from '@/components/novel-copilot/useCopilotTargetNavigation'
 import { MIN_NOVEL_SHELL_DRAWER_WIDTH } from '@/components/novel-shell/novelShellChromeState'
 import { useUiLocale } from '@/contexts/UiLocaleContext'
+import { api } from '@/services/api'
+import { novelKeys } from '@/hooks/novel/keys'
+import { trackHostedAnalyticsEvent } from '@/lib/hostedAnalytics'
+import { isSeededDemoNovel } from '@/lib/demoProject'
+import { getWindowIndexPollingInterval } from '@/lib/windowIndexStatus'
+import {
+  countVisitedDemoFirstWritingOnboardingSteps,
+  getDemoFirstWritingOnboardingState,
+  markDemoFirstWritingOnboardingStepVisited,
+} from '@/lib/demoFirstOnboardingStorage'
+import {
+  isWorldEntryPendingExpired,
+  resolvePendingWorldEntryHandoffFromBootstrapJob,
+} from '@/lib/worldEntryHandoff'
+import { normalizeWorldEntryHandoff } from '@/lib/worldEntryReview'
+import { copilotDrawerShellClassName } from '@/components/novel-copilot/novelCopilotChrome'
+import { cn } from '@/lib/utils'
+import { loadAtlasAssistWorkbench, scheduleAtlasAssistWorkbenchPrefetch } from '@/components/atlas/workbench/atlasAssistWorkbenchLoader'
+import {
+  loadNovelCopilotDrawer,
+  scheduleNovelCopilotDrawerPrefetch,
+} from '@/components/novel-copilot/novelCopilotDrawerLoader'
 
 const ATLAS_MIN_MAIN_STAGE_WIDTH = 760
+const ATLAS_ASSIST_OVERLAY_MAX_WIDTH = 420
+const ATLAS_ASSIST_OVERLAY_MARGIN_PX = 24
+const AtlasAssistWorkbench = lazy(async () => {
+  const mod = await loadAtlasAssistWorkbench()
+  return { default: mod.AtlasAssistWorkbench }
+})
+const NovelCopilotDrawer = lazy(async () => {
+  const mod = await loadNovelCopilotDrawer()
+  return { default: mod.NovelCopilotDrawer }
+})
+const EntityDetail = lazy(async () => {
+  const mod = await import('@/components/world-model/entities/EntityDetail')
+  return { default: mod.EntityDetail }
+})
+const DraftReviewNavigator = lazy(async () => {
+  const mod = await import('@/components/atlas/review/DraftReviewNavigator')
+  return { default: mod.DraftReviewNavigator }
+})
+const DraftReviewTab = lazy(async () => {
+  const mod = await import('@/components/world-model/shared/DraftReviewTab')
+  return { default: mod.DraftReviewTab }
+})
 
 function parseOptionalNumber(raw: string | null) {
   if (!raw) return null
   const value = Number(raw)
   return Number.isFinite(value) ? value : null
+}
+
+function AtlasAssistWorkbenchFallback({
+  width,
+}: {
+  width: number
+}) {
+  return (
+    <aside
+      className={cn(
+        'relative shrink-0 overflow-hidden border-l',
+        copilotDrawerShellClassName,
+      )}
+      style={{ width }}
+      data-testid="atlas-assist-workbench-fallback"
+      aria-label="Loading Atlas assist"
+    >
+      <div className="absolute inset-0 bg-[var(--nw-copilot-shell-bg)]" />
+      <div className="relative flex h-full flex-col px-4 py-5">
+        <div className="h-16 rounded-[18px] border border-[var(--nw-copilot-border)] bg-background/12" />
+        <div className="mt-4 space-y-4">
+          <div className="h-40 rounded-[24px] border border-[var(--nw-copilot-border)] bg-background/10" />
+          <div className="h-48 rounded-[24px] border border-[var(--nw-copilot-border)] bg-background/10" />
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+function AtlasEntityDetailFallback() {
+  return (
+    <div
+      className="flex-1 min-h-0 h-full overflow-y-auto"
+      data-testid="atlas-entity-detail-fallback"
+      aria-label="Loading entity detail"
+    >
+      <div className="mx-auto max-w-5xl space-y-4 px-8 py-8">
+        <div className="h-8 w-56 rounded bg-[hsl(var(--foreground)/0.12)]" />
+        <div className="h-28 rounded-2xl border border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)]" />
+        <div className="h-40 rounded-2xl border border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)]" />
+      </div>
+    </div>
+  )
+}
+
+function DraftReviewNavigatorFallback() {
+  return (
+    <div
+      className="shrink-0 flex h-full min-h-0 w-[280px] flex-col overflow-hidden border-r border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)]"
+      data-testid="draft-review-navigator-fallback"
+      aria-label="Loading review navigator"
+    >
+      <div className="space-y-3 p-4">
+        <div className="h-5 w-32 rounded bg-[hsl(var(--foreground)/0.10)]" />
+        <div className="h-9 rounded-xl border border-[var(--nw-glass-border)] bg-transparent" />
+      </div>
+      <div className="space-y-2 px-2 pb-3">
+        <div className="h-14 rounded-xl bg-[hsl(var(--foreground)/0.06)]" />
+        <div className="h-14 rounded-xl bg-[hsl(var(--foreground)/0.06)]" />
+        <div className="h-14 rounded-xl bg-[hsl(var(--foreground)/0.06)]" />
+      </div>
+    </div>
+  )
+}
+
+function DraftReviewTabFallback() {
+  return (
+    <div
+      className="flex-1 min-w-0 overflow-hidden p-4"
+      data-testid="draft-review-tab-fallback"
+      aria-label="Loading review content"
+    >
+      <div className="space-y-3">
+        <div className="h-24 rounded-2xl border border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)]" />
+        <div className="h-24 rounded-2xl border border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)]" />
+        <div className="h-24 rounded-2xl border border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)]" />
+      </div>
+    </div>
+  )
 }
 
 export function NovelAtlasPage() {
@@ -62,10 +187,25 @@ export function NovelAtlasPage() {
   const nid = Number(novelId)
   const invalidNovelId = Number.isNaN(nid)
   const studioOrigin = useMemo(() => readAtlasStudioOriginSearchParams(searchParams), [searchParams])
-  const studioReturnPath = studioOrigin ? buildStudioHostPath(nid, studioOrigin) : null
+  const worldEntryHandoff = useMemo(() => readWorldEntryHandoffSearchParams(searchParams), [searchParams])
+  const worldEntryPending = useMemo(() => readWorldEntryPendingSearchParams(searchParams), [searchParams])
+  const studioReturnPath = useMemo(() => {
+    const basePath = studioOrigin ? buildStudioHostPath(nid, studioOrigin) : `/novel/${nid}`
+    const url = new URL(basePath, 'https://novwr.local')
+    let nextSearchParams = new URLSearchParams(url.search)
+    nextSearchParams = setWorldEntryHandoffSearchParams(nextSearchParams, worldEntryHandoff)
+    nextSearchParams = setWorldEntryPendingSearchParams(nextSearchParams, worldEntryPending)
+    const nextSearch = nextSearchParams.toString()
+    return `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}`
+  }, [nid, studioOrigin, worldEntryHandoff, worldEntryPending])
   const [reviewSearch, setReviewSearch] = useState('')
   const [reviewHighlight, setReviewHighlight] = useState<number | null>(null)
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const trackedWorldModelViewRef = useRef(false)
+  const [assistOpen, setAssistOpen] = useState(true)
+  const [assistDockMode, setAssistDockMode] = useState<'rail' | 'overlay'>('rail')
+  const [assistRenderWidth, setAssistRenderWidth] = useState(drawerWidth)
+  const assistVisible = assistOpen || copilotIsOpen
   const handleReviewSelect = useCallback((kind: DraftReviewKind, id: number) => {
     setReviewHighlight(id)
     setSearchParams((prev) => setAtlasHighlightSearchParams(setAtlasReviewKindSearchParams(prev, kind), id), {
@@ -75,19 +215,41 @@ export function NovelAtlasPage() {
     highlightTimerRef.current = setTimeout(() => setReviewHighlight(null), 2500)
   }, [setSearchParams])
   const [relCreateOpen, setRelCreateOpen] = useState(false)
+  const { data: novel } = useQuery({
+    queryKey: novelKeys.detail(nid),
+    queryFn: () => api.getNovel(nid),
+    enabled: !invalidNovelId,
+    refetchInterval: (query) => getWindowIndexPollingInterval(query.state.data?.window_index ?? null),
+  })
+  const { data: bootstrapJob } = useBootstrapStatus(nid, {
+    refetchWhenMissing: novel?.window_index?.ingest?.bootstrap_plan != null,
+  })
+  const {
+    totalDrafts,
+    isResolved: isDraftBacklogResolved,
+  } = useDraftReviewBacklog(nid)
 
-  // Narrow-desktop fallback: auto-close copilot when three-zone layout cannot fit
-  // (atlas-design-spec §Spatial Zone Contracts — Center Stage min 480px)
+  // Narrow-desktop fallback: keep Atlas assist reachable by switching from docked rail to overlay.
   useEffect(() => {
-    if (!copilotIsOpen || !containerRef.current) return
+    if (!assistVisible || !containerRef.current) return
     const el = containerRef.current
     const checkWidth = () => {
       const maxDrawerWidth = el.clientWidth - ATLAS_MIN_MAIN_STAGE_WIDTH
       if (maxDrawerWidth < MIN_NOVEL_SHELL_DRAWER_WIDTH) {
-        closeCopilot()
+        setAssistDockMode('overlay')
+        setAssistRenderWidth(
+          Math.min(
+            drawerWidth,
+            ATLAS_ASSIST_OVERLAY_MAX_WIDTH,
+            Math.max(el.clientWidth - ATLAS_ASSIST_OVERLAY_MARGIN_PX * 2, 0),
+          ),
+        )
+        if (copilotIsOpen) closeCopilot()
         return
       }
 
+      setAssistDockMode('rail')
+      setAssistRenderWidth(Math.min(drawerWidth, maxDrawerWidth))
       if (drawerWidth > maxDrawerWidth) {
         setDrawerWidth(maxDrawerWidth)
       }
@@ -96,7 +258,16 @@ export function NovelAtlasPage() {
     const observer = new ResizeObserver(checkWidth)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [closeCopilot, copilotIsOpen, drawerWidth, setDrawerWidth])
+  }, [assistVisible, closeCopilot, copilotIsOpen, drawerWidth, setDrawerWidth])
+
+  useEffect(() => {
+    if (assistVisible && !copilotIsOpen) return
+    return scheduleAtlasAssistWorkbenchPrefetch()
+  }, [assistVisible, copilotIsOpen])
+
+  useEffect(() => {
+    return scheduleNovelCopilotDrawerPrefetch()
+  }, [])
   const { data: entities = [] } = useWorldEntities(nid)
   const { data: systems = [] } = useWorldSystems(nid)
   const selectedEntityId = routeState.entityId
@@ -125,6 +296,38 @@ export function NovelAtlasPage() {
     [searchParams],
   )
   const effectiveReviewHighlight = reviewHighlightFromUrl ?? reviewHighlight
+
+  useEffect(() => {
+    if (invalidNovelId || trackedWorldModelViewRef.current) return
+    trackedWorldModelViewRef.current = true
+    void trackHostedAnalyticsEvent('world_model_view', {
+      novelId: nid,
+      meta: { surface: 'atlas', tab },
+    })
+  }, [invalidNovelId, nid, tab])
+
+  useEffect(() => {
+    if (invalidNovelId || !isSeededDemoNovel(novel)) return
+    const previous = getDemoFirstWritingOnboardingState(nid, novel?.created_at)
+    if (previous.visited.atlas) return
+    const next = markDemoFirstWritingOnboardingStepVisited(nid, novel?.created_at, 'atlas')
+    const progressCount = countVisitedDemoFirstWritingOnboardingSteps(next)
+    void trackHostedAnalyticsEvent('demo_guide_step_complete', {
+      novelId: nid,
+      meta: {
+        step: 'atlas',
+        progress_count: progressCount,
+      },
+    })
+    if (previous.status !== 'completed' && next.status === 'completed') {
+      void trackHostedAnalyticsEvent('demo_guide_completed', {
+        novelId: nid,
+        meta: {
+          progress_count: progressCount,
+        },
+      })
+    }
+  }, [invalidNovelId, nid, novel])
 
   const setSelectedEntity = useCallback((entityId: number | null) => {
     setSearchParams((prev) => {
@@ -164,6 +367,67 @@ export function NovelAtlasPage() {
     }, { replace: true })
   }, [reviewKind, setSearchParams])
 
+  const openDraftReviewWithHistory = useCallback((kind?: DraftReviewKind) => {
+    setReviewSearch('')
+    setReviewHighlight(null)
+    setSearchParams((prev) => {
+      return setAtlasReviewKindSearchParams(prev, kind ?? reviewKind)
+    }, { replace: false })
+  }, [reviewKind, setSearchParams])
+
+  const setAtlasWorldEntryHandoff = useCallback((handoff: ReturnType<typeof readWorldEntryHandoffSearchParams>) => {
+    setSearchParams((prev) => {
+      let next = setWorldEntryHandoffSearchParams(prev, handoff)
+      if (handoff) next = setWorldEntryPendingSearchParams(next, null)
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
+  const setAtlasWorldEntryPending = useCallback((pending: ReturnType<typeof readWorldEntryPendingSearchParams>) => {
+    setSearchParams((prev) => {
+      let next = setWorldEntryPendingSearchParams(prev, pending)
+      if (pending) next = setWorldEntryHandoffSearchParams(next, null)
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
+  useEffect(() => {
+    const nextHandoff = resolvePendingWorldEntryHandoffFromBootstrapJob(worldEntryPending, bootstrapJob)
+    if (nextHandoff) {
+      setSearchParams((prev) => {
+        let next = setWorldEntryHandoffSearchParams(prev, nextHandoff)
+        next = setWorldEntryPendingSearchParams(next, null)
+        return next
+      }, { replace: true })
+      return
+    }
+
+    if (!isWorldEntryPendingExpired(worldEntryPending)) return
+
+    setSearchParams((prev) => setWorldEntryPendingSearchParams(prev, null), { replace: true })
+  }, [bootstrapJob, setSearchParams, worldEntryPending])
+
+  useEffect(() => {
+    if (!isDraftBacklogResolved) return
+    const normalizedHandoff = normalizeWorldEntryHandoff(worldEntryHandoff, {
+      reviewBacklogCount: totalDrafts,
+    })
+    if (
+      normalizedHandoff?.kind === worldEntryHandoff?.kind
+      && normalizedHandoff?.entityCount === worldEntryHandoff?.entityCount
+      && normalizedHandoff?.relationshipCount === worldEntryHandoff?.relationshipCount
+      && normalizedHandoff?.systemCount === worldEntryHandoff?.systemCount
+    ) {
+      return
+    }
+    setAtlasWorldEntryHandoff(normalizedHandoff)
+  }, [
+    isDraftBacklogResolved,
+    setAtlasWorldEntryHandoff,
+    totalDrafts,
+    worldEntryHandoff,
+  ])
+
   const handleReviewKindChange = useCallback((kind: DraftReviewKind) => {
     setReviewHighlight(null)
     setSearchParams((prev) => {
@@ -181,14 +445,23 @@ export function NovelAtlasPage() {
   })
 
   const handleToggleCopilot = useCallback(() => {
-    if (copilotIsOpen) {
-      closeCopilot()
-    } else if (copilot.sessions.length > 0) {
-      copilot.reopenDrawer()
-    } else {
-      copilot.openDrawer(...buildWholeBookCopilotLaunchArgs(routeState))
+    if (assistDockMode === 'overlay') {
+      if (copilotIsOpen) closeCopilot()
+      setAssistOpen((current) => !assistVisible ? true : !current)
+      return
     }
-  }, [copilotIsOpen, copilot, closeCopilot, routeState])
+
+    if (assistVisible) {
+      if (copilotIsOpen) closeCopilot()
+      setAssistOpen(false)
+      return
+    }
+
+    setAssistOpen(true)
+    if (copilot.sessions.length > 0) {
+      copilot.reopenDrawer()
+    }
+  }, [assistDockMode, assistVisible, closeCopilot, copilot, copilotIsOpen])
 
   if (invalidNovelId) return <div className="p-4 text-muted-foreground">Novel not found</div>
 
@@ -242,8 +515,14 @@ export function NovelAtlasPage() {
                   <button
                     type="button"
                     onClick={handleToggleCopilot}
+                    onMouseEnter={() => {
+                      if (!copilotIsOpen) void loadAtlasAssistWorkbench()
+                    }}
+                    onFocus={() => {
+                      if (!copilotIsOpen) void loadAtlasAssistWorkbench()
+                    }}
                     className={`inline-flex items-center justify-center rounded-md h-8 w-8 transition-colors ${
-                      copilotIsOpen
+                      assistVisible
                         ? 'bg-[var(--nw-glass-bg-hover)] text-foreground'
                         : 'text-muted-foreground hover:text-foreground hover:bg-[var(--nw-glass-bg-hover)]'
                     }`}
@@ -269,18 +548,17 @@ export function NovelAtlasPage() {
                   selectedEntityId={effectiveSelectedEntityId}
                   onSelectEntity={setSelectedEntity}
                   bottomSlot={(
-                    <>
-                      <WorldBuildPanel novelId={nid} />
-                      <DraftReviewSummaryCard novelId={nid} onOpen={openDraftReview} />
-                    </>
+                    <DraftReviewSummaryCard novelId={nid} onOpen={openDraftReview} />
                   )}
                 />
-                <EntityDetail
-                  novelId={nid}
-                  entityId={effectiveSelectedEntityId}
-                  onDeleted={() => setSelectedEntity(null)}
-                  copilotSurface="atlas"
-                />
+                <Suspense fallback={<AtlasEntityDetailFallback />}>
+                  <EntityDetail
+                    novelId={nid}
+                    entityId={effectiveSelectedEntityId}
+                    onDeleted={() => setSelectedEntity(null)}
+                    copilotSurface="atlas"
+                  />
+                </Suspense>
               </TabsContent>
 
               <TabsContent value="relationships" className="flex-1 min-h-0 flex mt-0 overflow-hidden">
@@ -290,19 +568,19 @@ export function NovelAtlasPage() {
                   onSelectEntity={setSelectedEntity}
                   bottomSlot={
                     <>
-                      <WorldBuildPanel novelId={nid} />
                       <RelationshipSidebarPanel
                         novelId={nid}
                         selectedEntityId={effectiveSelectedEntityId}
                         selectedEntityName={effectiveSelectedEntityName}
                         onRequestNewRelationship={() => setRelCreateOpen(true)}
                         onOpenDraftReview={() => openDraftReview('relationships')}
+                        showResearchAction={false}
                       />
                       <DraftReviewSummaryCard novelId={nid} onOpen={openDraftReview} />
                     </>
                   }
                 />
-                  <RelationshipsTab
+                <RelationshipsTab
                   novelId={nid}
                   selectedEntityId={effectiveSelectedEntityId}
                   onSelectEntity={setSelectedEntity}
@@ -314,40 +592,91 @@ export function NovelAtlasPage() {
 
               <TabsContent value="review" className="flex-1 min-h-0 mt-0 overflow-hidden">
                 <div className="flex h-full min-h-0 overflow-hidden">
-                  <DraftReviewNavigator
-                    novelId={nid}
-                    kind={reviewKind}
-                    onKindChange={handleReviewKindChange}
-                    search={reviewSearch}
-                    onSearchChange={setReviewSearch}
-                    activeItemId={effectiveReviewHighlight}
-                    onSelectItem={handleReviewSelect}
-                  />
-                  <div className="flex-1 min-w-0 overflow-hidden">
-                    <DraftReviewTab
+                  <Suspense fallback={<DraftReviewNavigatorFallback />}>
+                    <DraftReviewNavigator
                       novelId={nid}
                       kind={reviewKind}
                       onKindChange={handleReviewKindChange}
                       search={reviewSearch}
-                      showKindSelector={false}
-                      highlightId={effectiveReviewHighlight}
-                      onOpenEntity={(id) => {
-                        openAtlasEntityTab('entities', id)
-                      }}
-                      onOpenRelationships={(id) => {
-                        openAtlasEntityTab('relationships', id)
-                      }}
-                      onOpenSystem={(id) => {
-                        openAtlasSystemTab(id)
-                      }}
+                      onSearchChange={setReviewSearch}
+                      activeItemId={effectiveReviewHighlight}
+                      onSelectItem={handleReviewSelect}
                     />
+                  </Suspense>
+                  <div className="flex-1 min-w-0 overflow-hidden">
+                    <Suspense fallback={<DraftReviewTabFallback />}>
+                      <DraftReviewTab
+                        novelId={nid}
+                        kind={reviewKind}
+                        onKindChange={handleReviewKindChange}
+                        search={reviewSearch}
+                        showKindSelector={false}
+                        highlightId={effectiveReviewHighlight}
+                        onOpenEntity={(id) => {
+                          openAtlasEntityTab('entities', id)
+                        }}
+                        onOpenRelationships={(id) => {
+                          openAtlasEntityTab('relationships', id)
+                        }}
+                        onOpenSystem={(id) => {
+                          openAtlasSystemTab(id)
+                        }}
+                      />
+                    </Suspense>
                   </div>
                 </div>
               </TabsContent>
             </Tabs>
           </ArtifactStage>
-          <NovelCopilotDrawer novelId={nid} onLocateTarget={handleLocateCopilotTarget} />
+          {assistVisible && copilotIsOpen ? (
+            <Suspense fallback={<NovelCopilotDrawerFallback width={drawerWidth} />}>
+              <NovelCopilotDrawer novelId={nid} onLocateTarget={handleLocateCopilotTarget} />
+            </Suspense>
+          ) : null}
+          {assistVisible && !copilotIsOpen && assistDockMode === 'rail' ? (
+            <Suspense fallback={<AtlasAssistWorkbenchFallback width={assistRenderWidth} />}>
+              <AtlasAssistWorkbench
+                novelId={nid}
+                tab={tab}
+                width={assistRenderWidth}
+                onResize={setDrawerWidth}
+                selectedEntityId={effectiveSelectedEntityId}
+                selectedEntityName={effectiveSelectedEntityName}
+                worldEntityCount={entities.length}
+                worldSystemCount={systems.length}
+                handoff={worldEntryHandoff}
+                pending={worldEntryPending}
+                onHandoffChange={setAtlasWorldEntryHandoff}
+                onPendingHandoffChange={setAtlasWorldEntryPending}
+                onOpenDraftReview={openDraftReviewWithHistory}
+              />
+            </Suspense>
+          ) : null}
         </NovelShellLayout>
+        {assistVisible && !copilotIsOpen && assistDockMode === 'overlay' ? (
+          <div className="pointer-events-none absolute inset-y-0 right-0 z-20 flex items-stretch justify-end p-3 pl-0">
+            <div className="pointer-events-auto flex max-w-full pt-12">
+              <Suspense fallback={<AtlasAssistWorkbenchFallback width={assistRenderWidth} />}>
+                <AtlasAssistWorkbench
+                  novelId={nid}
+                  tab={tab}
+                  width={assistRenderWidth}
+                  presentation="overlay"
+                  onResize={setDrawerWidth}
+                  selectedEntityId={effectiveSelectedEntityId}
+                  selectedEntityName={effectiveSelectedEntityName}
+                  worldEntityCount={entities.length}
+                  worldSystemCount={systems.length}
+                  handoff={worldEntryHandoff}
+                  pending={worldEntryPending}
+                  onHandoffChange={setAtlasWorldEntryHandoff}
+                  onPendingHandoffChange={setAtlasWorldEntryPending}
+                  onOpenDraftReview={openDraftReviewWithHistory}
+                />
+              </Suspense>
+            </div>
+          </div>
+        ) : null}
       </div>
     </AtlasShell>
   )

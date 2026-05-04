@@ -198,15 +198,24 @@ class AIClient:
         return get_settings()
 
     def _get_config(self, role: AgentRole = "default") -> dict:
-        """Get API configuration from env settings (openai_* fields)."""
-        base_url = self.settings.openai_base_url
+        """Get API configuration from runtime settings."""
+        _ = role
+        settings = self.settings
+        if settings.deploy_mode == "hosted":
+            base_url = settings.hosted_llm_base_url or settings.openai_base_url
+            api_key = settings.hosted_llm_api_key or settings.openai_api_key
+            model = settings.hosted_llm_model or settings.openai_model
+        else:
+            base_url = settings.openai_base_url
+            api_key = settings.openai_api_key
+            model = settings.openai_model
         if base_url.endswith("/chat/completions"):
             base_url = base_url[: -len("/chat/completions")]
         base_url = base_url.rstrip("/")
         return {
             "base_url": base_url,
-            "api_key": self.settings.openai_api_key,
-            "model": self.settings.openai_model,
+            "api_key": api_key,
+            "model": model,
         }
 
     def _resolve_config(

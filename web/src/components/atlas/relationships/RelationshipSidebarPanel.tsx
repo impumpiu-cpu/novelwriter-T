@@ -14,6 +14,7 @@ export function RelationshipSidebarPanel({
   onRequestNewRelationship,
   onOpenDraftReview,
   className,
+  showResearchAction = true,
 }: {
   novelId: number
   selectedEntityId: number | null
@@ -21,6 +22,7 @@ export function RelationshipSidebarPanel({
   onRequestNewRelationship: () => void
   onOpenDraftReview: () => void
   className?: string
+  showResearchAction?: boolean
 }) {
   const { t } = useUiLocale()
   const { data: relationships = [] } = useWorldRelationships(
@@ -54,18 +56,20 @@ export function RelationshipSidebarPanel({
         </>
       )}
       <div className="ml-auto flex items-center gap-1">
-        <button
-          type="button"
-          className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--nw-glass-bg-hover)] transition-colors"
-          onClick={() => copilot.openDrawer(...buildRelationshipResearchCopilotLaunchArgs({
-            entityId: selectedEntityId,
-            entityName: selectedEntityName,
-            surface: 'atlas',
-          }))}
-          title={t('worldModel.relationship.aiSuggestions')}
-        >
-          <Sparkles className="h-3.5 w-3.5" />
-        </button>
+        {showResearchAction ? (
+          <button
+            type="button"
+            className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--nw-glass-bg-hover)] transition-colors"
+            onClick={() => copilot.openDrawer(...buildRelationshipResearchCopilotLaunchArgs({
+              entityId: selectedEntityId,
+              entityName: selectedEntityName,
+              surface: 'atlas',
+            }))}
+            title={t('worldModel.relationship.aiSuggestions')}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
         <button
           type="button"
           className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--nw-glass-bg-hover)] transition-colors disabled:opacity-40"

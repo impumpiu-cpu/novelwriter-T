@@ -10,6 +10,7 @@ import {
   installSession,
   readInviteCode,
 } from '../fixtures/api-helpers'
+import { waitForInitialNovelReady } from '../fixtures/novel-ready'
 
 const API = 'http://localhost:8000'
 const AUTH_SCOPE = 'world-generation-llm'
@@ -120,7 +121,7 @@ test.describe.configure({ mode: 'serial' })
 test.describe('World generation (real LLM, integration)', () => {
   test.skip(
     deployMode === 'hosted' && !inviteCode,
-    'Skipping: hosted run requires INVITE_CODE or E2E_INVITE_CODE',
+    'Skipping: hosted run requires HOSTED_INVITE_CODES or E2E_INVITE_CODE',
   )
 
   test.skip(
@@ -181,7 +182,7 @@ test.describe('World generation (real LLM, integration)', () => {
     ].join('\n')
 
     await page.goto(`/novel/${novelId}`)
-    await expect(page.getByTestId('world-onboarding')).toBeVisible({ timeout: 15_000 })
+    await waitForInitialNovelReady(page, novelId, { requireOnboarding: true })
 
     await page.getByTestId('world-onboarding-generate').click()
     await expect(page.getByTestId('world-gen-dialog')).toBeVisible()

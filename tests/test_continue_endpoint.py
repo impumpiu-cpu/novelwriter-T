@@ -221,7 +221,7 @@ class TestContinueEndpoint:
         c, _ = client
 
         import app.core.generator as generator_mod
-        import app.api.novels as novels_mod
+        import app.api.novel_continuation_runtime as continuation_mod
 
         async def fake_generate(prompt: str, system_prompt: str = "", max_tokens: int = 0, **kwargs) -> str:
             del prompt, system_prompt, max_tokens, kwargs
@@ -232,7 +232,7 @@ class TestContinueEndpoint:
             raise RuntimeError("boom")
 
         monkeypatch.setattr(generator_mod.ai_client, "generate", fake_generate)
-        monkeypatch.setattr(novels_mod, "prose_check_continuation", raise_prose_checker)
+        monkeypatch.setattr(continuation_mod, "prose_check_continuation", raise_prose_checker)
 
         resp = c.post(
             f"/api/novels/{novel.id}/continue",
@@ -253,7 +253,7 @@ class TestContinueEndpoint:
         c, _ = client
 
         import app.core.generator as generator_mod
-        import app.api.novels as novels_mod
+        import app.api.novel_continuation_runtime as continuation_mod
 
         async def fake_generate(prompt: str, system_prompt: str = "", max_tokens: int = 0, **kwargs) -> str:
             del prompt, system_prompt, max_tokens, kwargs
@@ -270,7 +270,7 @@ class TestContinueEndpoint:
 
         monkeypatch.setattr(generator_mod.ai_client, "generate", fake_generate)
         monkeypatch.setattr(generator_mod.ai_client, "generate_stream", fake_generate_stream)
-        monkeypatch.setattr(novels_mod, "prose_check_continuation", raise_prose_checker)
+        monkeypatch.setattr(continuation_mod, "prose_check_continuation", raise_prose_checker)
 
         resp = c.post(
             f"/api/novels/{novel.id}/continue/stream",
@@ -434,6 +434,18 @@ class TestContinueStreamEndpoint:
         assert captured.get("kwargs", {}).get("base_url") == "https://user.example.com/v1"
         assert captured.get("kwargs", {}).get("api_key") == "user-key"
         assert captured.get("kwargs", {}).get("model") == "user-model"
+
+    def test_stream_sets_no_store_and_unbuffered_transport_headers(self, client, novel):
+        c, _ = client
+
+        resp = c.post(
+            f"/api/novels/{novel.id}/continue/stream",
+            json={"num_versions": 1, "context_chapters": 2},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["cache-control"] == "no-store"
+        assert resp.headers["x-accel-buffering"] == "no"
+        assert resp.headers["x-content-type-options"] == "nosniff"
 
     def test_stream_done_event_uses_split_warning_keys(self, client, novel, monkeypatch):
         c, _ = client

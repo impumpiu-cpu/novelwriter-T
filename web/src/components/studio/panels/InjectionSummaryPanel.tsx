@@ -14,6 +14,7 @@ interface InjectionSummaryPanelProps {
   debug: ContinueDebugSummary
   onClose: () => void
   onOpenAtlas: (tab: Category) => void
+  onWarmAtlas?: () => void
   onSelectItem?: (category: Category, label: string) => void
   activeCategory?: Category
   onActiveCategoryChange?: (category: Category) => void
@@ -23,6 +24,7 @@ export function InjectionSummaryPanel({
   debug,
   onClose,
   onOpenAtlas,
+  onWarmAtlas,
   onSelectItem,
   activeCategory,
   onActiveCategoryChange,
@@ -150,6 +152,8 @@ export function InjectionSummaryPanel({
           <button
             type="button"
             onClick={() => onOpenAtlas(effectiveCategory)}
+            onMouseEnter={onWarmAtlas}
+            onFocus={onWarmAtlas}
             className="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-[12px] text-muted-foreground hover:text-accent hover:bg-[var(--nw-glass-bg-hover)] transition-colors"
           >
             <ExternalLink size={12} />

@@ -5,6 +5,7 @@ POST /api/novels/{novel_id}/continue
 """
 
 from unittest.mock import AsyncMock
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -12,8 +13,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import StaticPool, create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core.continuation_runs import build_continuation_request_hash
 from app.database import Base, get_db
-from app.models import Chapter, Novel, QuotaReservation, TokenUsage, User
+from app.models import Chapter, Continuation, ContinuationRun, Novel, QuotaReservation, TokenUsage, User
+from app.schemas import ContinueRequest
 
 
 engine = create_engine(
@@ -92,6 +95,8 @@ def novel(db, hosted_user):
 @pytest.fixture
 def client(db, hosted_user, monkeypatch):
     from app.api import novels
+    import app.api.novel_continuation_context as continuation_context
+    import app.api.novel_continuation_runtime as continuation_api
     from app.core.auth import get_current_user_or_default
     from app.schemas import ContinueDebugSummary
 
@@ -108,7 +113,7 @@ def client(db, hosted_user, monkeypatch):
     test_app.dependency_overrides[get_current_user_or_default] = lambda: hosted_user
 
     # Avoid pulling in the full context assembly stack; quota behavior is the target.
-    ctx = novels._ContinuationContext(
+    ctx = continuation_context._ContinuationContext(
         recent_text="recent",
         world_context="",
         narrative_constraints="",
@@ -122,9 +127,9 @@ def client(db, hosted_user, monkeypatch):
         novels._verify_novel_access(n, current_user)
         return ctx
 
-    monkeypatch.setattr(novels, "_prepare_continuation_context", fake_prepare)
-    monkeypatch.setattr(novels, "postcheck_continuation", lambda **kwargs: [])
-    monkeypatch.setattr(novels, "record_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(continuation_api, "_prepare_continuation_context", fake_prepare)
+    monkeypatch.setattr(continuation_api, "postcheck_continuation", lambda **kwargs: [])
+    monkeypatch.setattr(continuation_api, "record_event", lambda *args, **kwargs: None)
 
     # Avoid network calls: stub out generator and just persist dummy continuations.
     async def fake_continue_novel(*, db, novel_id, num_versions, **kwargs):
@@ -144,11 +149,17 @@ def client(db, hosted_user, monkeypatch):
             out.append(c)
         return out
 
-    monkeypatch.setattr(novels, "continue_novel", fake_continue_novel)
+    monkeypatch.setattr(continuation_api, "continue_novel", fake_continue_novel)
 
     with TestClient(test_app) as c:
         yield c
     test_app.dependency_overrides.clear()
+
+
+def _continue_request_hash(payload: dict[str, object]) -> str:
+    return build_continuation_request_hash(
+        ContinueRequest.model_validate(payload).model_dump(mode="json", exclude_none=False)
+    )
 
 
 def test_continue_charges_quota_on_success(client, db, hosted_user, novel):
@@ -165,14 +176,14 @@ def test_continue_charges_quota_on_success(client, db, hosted_user, novel):
 
 
 def test_continue_does_not_charge_quota_on_busy_semaphore_503(client, db, hosted_user, novel, monkeypatch):
-    from app.api import novels
+    import app.api.novel_continuation_runtime as continuation_api
 
     before = hosted_user.generation_quota
 
     async def _busy() -> None:
         raise HTTPException(status_code=503, detail="busy", headers={"Retry-After": "1"})
 
-    monkeypatch.setattr(novels, "acquire_llm_slot", _busy)
+    monkeypatch.setattr(continuation_api, "acquire_llm_slot", _busy)
 
     resp = client.post(
         f"/api/novels/{novel.id}/continue",
@@ -219,13 +230,12 @@ def test_continue_rejects_when_ai_budget_hard_stop_is_reached(client, db, hosted
         config_mod._settings_instance = prev
 
 
-def test_continue_allows_byok_when_ai_budget_hard_stop_is_reached(
+def test_continue_rejects_byok_when_ai_budget_hard_stop_is_reached(
     client,
     db,
     hosted_user,
     novel,
     monkeypatch,
-    allow_public_llm_url_resolution,
 ):
     import app.config as config_mod
     from app.config import Settings
@@ -233,7 +243,6 @@ def test_continue_allows_byok_when_ai_budget_hard_stop_is_reached(
     prev = config_mod._settings_instance
     config_mod._settings_instance = Settings(deploy_mode="hosted", ai_hard_stop_usd=1.0, _env_file=None)
     try:
-        allow_public_llm_url_resolution()
         db.add(
             TokenUsage(
                 user_id=hosted_user.id,
@@ -258,21 +267,22 @@ def test_continue_allows_byok_when_ai_budget_hard_stop_is_reached(
                 "x-llm-model": "byok-model",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["code"] == "hosted_byok_disabled"
 
         db.refresh(hosted_user)
-        assert hosted_user.generation_quota == before - 1
+        assert hosted_user.generation_quota == before
     finally:
         config_mod._settings_instance = prev
 
 
 def test_continue_refunds_quota_on_generation_failure(client, db, hosted_user, novel, monkeypatch):
-    from app.api import novels
+    import app.api.novel_continuation_runtime as continuation_api
 
     before = hosted_user.generation_quota
 
     mock = AsyncMock(side_effect=RuntimeError("boom"))
-    monkeypatch.setattr(novels, "continue_novel", mock)
+    monkeypatch.setattr(continuation_api, "continue_novel", mock)
 
     resp = client.post(
         f"/api/novels/{novel.id}/continue",
@@ -285,7 +295,7 @@ def test_continue_refunds_quota_on_generation_failure(client, db, hosted_user, n
 
 
 def test_continue_stream_releases_llm_slot_on_non_http_quota_failure(client, novel, monkeypatch):
-    from app.api import novels
+    import app.api.novel_continuation_runtime as continuation_api
 
     releases: list[str] = []
 
@@ -307,9 +317,9 @@ def test_continue_stream_releases_llm_slot_on_non_http_quota_failure(client, nov
     def _release() -> None:
         releases.append("released")
 
-    monkeypatch.setattr(novels, "QuotaScope", BrokenQuotaScope)
-    monkeypatch.setattr(novels, "acquire_llm_slot", _acquire)
-    monkeypatch.setattr(novels, "release_llm_slot", _release)
+    monkeypatch.setattr(continuation_api, "QuotaScope", BrokenQuotaScope)
+    monkeypatch.setattr(continuation_api, "acquire_llm_slot", _acquire)
+    monkeypatch.setattr(continuation_api, "release_llm_slot", _release)
 
     with pytest.raises(RuntimeError, match="boom"):
         client.post(
@@ -321,7 +331,7 @@ def test_continue_stream_releases_llm_slot_on_non_http_quota_failure(client, nov
 
 
 def test_continue_stream_reclaims_abandoned_reservation_before_quota_check(client, db, hosted_user, novel, monkeypatch):
-    from app.api import novels
+    import app.api.novel_continuation_runtime as continuation_api
 
     hosted_user.generation_quota = 0
     db.commit()
@@ -342,7 +352,7 @@ def test_continue_stream_reclaims_abandoned_reservation_before_quota_check(clien
         yield {"type": "variant_done", "variant": 0, "continuation_id": 101, "content": "续写内容"}
         yield {"type": "done", "continuation_ids": [101]}
 
-    monkeypatch.setattr(novels, "continue_novel_stream", fake_continue_novel_stream)
+    monkeypatch.setattr(continuation_api, "continue_novel_stream", fake_continue_novel_stream)
 
     resp = client.post(
         f"/api/novels/{novel.id}/continue/stream",
@@ -359,3 +369,313 @@ def test_continue_stream_reclaims_abandoned_reservation_before_quota_check(clien
     assert latest.lease_token != stale.lease_token
     assert latest.charged_count == 1
     assert hosted_user.generation_quota == 0
+
+
+def test_continue_fallback_reuses_completed_request_without_second_generation(client, db, hosted_user, novel, monkeypatch):
+    import app.api.novel_continuation_runtime as continuation_api
+
+    payload = {"num_versions": 1, "context_chapters": 1}
+    request_id = "continue-req-completed"
+    continuation = Continuation(
+        novel_id=novel.id,
+        chapter_number=2,
+        content="已完成续写",
+        prompt_used="p",
+    )
+    db.add(continuation)
+    db.commit()
+    db.refresh(continuation)
+
+    hosted_user.generation_quota = 0
+    db.commit()
+
+    db.add(
+        ContinuationRun(
+            user_id=hosted_user.id,
+            novel_id=novel.id,
+            client_request_id=request_id,
+            request_hash=_continue_request_hash(payload),
+            claim_token="original-owner",
+            status="completed",
+            delivered_count=1,
+            continuation_ids=[continuation.id],
+            debug_summary={
+                "context_chapters": 1,
+                "injected_systems": [],
+                "injected_entities": [],
+                "injected_relationships": [],
+                "relevant_entity_ids": [],
+                "ambiguous_keywords_disabled": [],
+                "drift_warnings": [],
+                "prose_warnings": [],
+            },
+        )
+    )
+    db.commit()
+
+    monkeypatch.setattr(
+        continuation_api,
+        "continue_novel",
+        AsyncMock(side_effect=AssertionError("completed request should be replayed, not regenerated")),
+    )
+
+    before_reservations = db.query(QuotaReservation).count()
+    resp = client.post(
+        f"/api/novels/{novel.id}/continue",
+        json=payload,
+        headers={
+            "X-Novwr-Continuation-Request-ID": request_id,
+            "X-Novwr-Delivery-Mode": "stream-fallback",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["continuations"][0]["id"] == continuation.id
+
+    db.refresh(hosted_user)
+    assert hosted_user.generation_quota == 0
+    assert db.query(QuotaReservation).count() == before_reservations
+    assert db.query(Continuation).count() == 1
+
+
+def test_continue_fallback_returns_conflict_while_original_request_is_still_running(client, db, hosted_user, novel, monkeypatch):
+    import app.api.novel_continuation_runtime as continuation_api
+
+    payload = {"num_versions": 1, "context_chapters": 1}
+    request_id = "continue-req-running"
+    monkeypatch.setattr(continuation_api, "_CONTINUATION_RUN_WAIT_TIMEOUT_SECONDS", 0.01)
+    hosted_user.generation_quota = 0
+    db.commit()
+
+    db.add(
+        ContinuationRun(
+            user_id=hosted_user.id,
+            novel_id=novel.id,
+            client_request_id=request_id,
+            request_hash=_continue_request_hash(payload),
+            claim_token="stream-owner",
+            status="running",
+            delivered_count=0,
+            continuation_ids=[],
+        )
+    )
+    db.commit()
+
+    monkeypatch.setattr(
+        continuation_api,
+        "continue_novel",
+        AsyncMock(side_effect=AssertionError("running request should not start a second sync generation")),
+    )
+
+    before_reservations = db.query(QuotaReservation).count()
+    resp = client.post(
+        f"/api/novels/{novel.id}/continue",
+        json=payload,
+        headers={
+            "X-Novwr-Continuation-Request-ID": request_id,
+            "X-Novwr-Delivery-Mode": "stream-fallback",
+        },
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "continuation_request_still_running"
+
+    db.refresh(hosted_user)
+    assert hosted_user.generation_quota == 0
+    assert db.query(QuotaReservation).count() == before_reservations
+
+
+def test_continue_duplicate_click_without_request_id_fast_fails(client, db, hosted_user, novel, monkeypatch):
+    import app.api.novel_continuation_runtime as continuation_api
+
+    payload = {"num_versions": 1, "context_chapters": 1}
+    db.add(
+        ContinuationRun(
+            user_id=hosted_user.id,
+            novel_id=novel.id,
+            client_request_id="existing-implicit-run",
+            request_hash=_continue_request_hash(payload),
+            semantic_key="continue",
+            claim_token="existing-owner",
+            status="running",
+            delivered_count=0,
+            continuation_ids=[],
+        )
+    )
+    db.commit()
+
+    monkeypatch.setattr(
+        continuation_api,
+        "continue_novel",
+        AsyncMock(side_effect=AssertionError("duplicate continuation click should not start generation")),
+    )
+
+    before_reservations = db.query(QuotaReservation).count()
+    resp = client.post(
+        f"/api/novels/{novel.id}/continue",
+        json=payload,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "continuation_duplicate_request"
+
+    db.refresh(hosted_user)
+    assert hosted_user.generation_quota == 2
+    assert db.query(QuotaReservation).count() == before_reservations
+
+
+def test_continue_does_not_reclaim_old_running_semantic_run_on_timeout(client, db, hosted_user, novel, monkeypatch):
+    import app.config as config_mod
+    import app.api.novel_continuation_runtime as continuation_api
+    from app.config import Settings
+
+    payload = {"num_versions": 1, "context_chapters": 1}
+    stale_started = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=10)
+    db.add(
+        ContinuationRun(
+            user_id=hosted_user.id,
+            novel_id=novel.id,
+            client_request_id="stale-continuation-run",
+            request_hash=_continue_request_hash(payload),
+            semantic_key="continue",
+            claim_token="stale-owner",
+            status="running",
+            delivered_count=0,
+            continuation_ids=[],
+            created_at=stale_started,
+            updated_at=stale_started,
+        )
+    )
+    db.commit()
+
+    prev = config_mod._settings_instance
+    config_mod._settings_instance = Settings(
+        deploy_mode="hosted",
+        generation_run_stale_timeout_seconds=1,
+        _env_file=None,
+    )
+    try:
+        monkeypatch.setattr(
+            continuation_api,
+            "continue_novel",
+            AsyncMock(side_effect=AssertionError("timeout alone must not reclaim a live continuation run")),
+        )
+        resp = client.post(f"/api/novels/{novel.id}/continue", json=payload)
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "continuation_duplicate_request"
+        db.refresh(hosted_user)
+        assert hosted_user.generation_quota == 2
+    finally:
+        config_mod._settings_instance = prev
+
+
+def test_continue_fallback_can_take_over_failed_request_with_no_delivered_output(client, db, hosted_user, novel, monkeypatch):
+    import app.api.novel_continuation_runtime as continuation_api
+
+    payload = {"num_versions": 1, "context_chapters": 1}
+    request_id = "continue-req-takeover"
+
+    db.add(
+        ContinuationRun(
+            user_id=hosted_user.id,
+            novel_id=novel.id,
+            client_request_id=request_id,
+            request_hash=_continue_request_hash(payload),
+            claim_token="stale-owner",
+            status="failed",
+            delivered_count=0,
+            continuation_ids=[],
+            error_code="continuation_stream_cancelled",
+            error_message="previous stream died early",
+        )
+    )
+    db.commit()
+
+    async def fake_continue_novel(*, db, novel_id, num_versions, **kwargs):
+        out = []
+        for _ in range(int(num_versions or 1)):
+            continuation = Continuation(
+                novel_id=novel_id,
+                chapter_number=2,
+                content="接管后续写",
+                prompt_used="p",
+            )
+            db.add(continuation)
+            db.commit()
+            db.refresh(continuation)
+            out.append(continuation)
+        return out
+
+    monkeypatch.setattr(continuation_api, "continue_novel", fake_continue_novel)
+
+    resp = client.post(
+        f"/api/novels/{novel.id}/continue",
+        json=payload,
+        headers={
+            "X-Novwr-Continuation-Request-ID": request_id,
+            "X-Novwr-Delivery-Mode": "stream-fallback",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["continuations"][0]["content"] == "接管后续写"
+
+    run = db.query(ContinuationRun).filter(ContinuationRun.client_request_id == request_id).one()
+    db.refresh(hosted_user)
+    assert run.status == "completed"
+    assert run.delivered_count == 1
+    assert len(run.continuation_ids or []) == 1
+    assert hosted_user.generation_quota == 1
+    reservation = db.query(QuotaReservation).one()
+    assert reservation.charged_count == 1
+    assert reservation.released_at is not None
+
+
+def test_continue_fallback_failed_request_id_respects_active_semantic_run(client, db, hosted_user, novel, monkeypatch):
+    import app.api.novel_continuation_runtime as continuation_api
+
+    payload = {"num_versions": 1, "context_chapters": 1}
+    request_id = "continue-req-failed-retry"
+
+    db.add(
+        ContinuationRun(
+            user_id=hosted_user.id,
+            novel_id=novel.id,
+            client_request_id=request_id,
+            request_hash=_continue_request_hash(payload),
+            claim_token="failed-owner",
+            status="failed",
+            delivered_count=0,
+            continuation_ids=[],
+            error_code="continuation_stream_cancelled",
+            error_message="previous stream died early",
+        )
+    )
+    db.add(
+        ContinuationRun(
+            user_id=hosted_user.id,
+            novel_id=novel.id,
+            client_request_id="active-semantic-owner",
+            request_hash=_continue_request_hash(payload),
+            semantic_key="continue",
+            claim_token="active-owner",
+            status="running",
+            delivered_count=0,
+            continuation_ids=[],
+        )
+    )
+    db.commit()
+
+    monkeypatch.setattr(
+        continuation_api,
+        "continue_novel",
+        AsyncMock(side_effect=AssertionError("failed request retry must not bypass an active semantic run")),
+    )
+
+    resp = client.post(
+        f"/api/novels/{novel.id}/continue",
+        json=payload,
+        headers={
+            "X-Novwr-Continuation-Request-ID": request_id,
+            "X-Novwr-Delivery-Mode": "stream-fallback",
+        },
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "continuation_duplicate_request"

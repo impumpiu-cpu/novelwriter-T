@@ -1,28 +1,26 @@
 // SPDX-FileCopyrightText: 2026 Isaac.X.Ω.Yuan
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { lazy, Suspense, useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import '@/lib/uiMessagePacks/novel'
 import { useQuery } from '@tanstack/react-query'
 import { MoreHorizontal, Pencil, Trash2, Upload } from 'lucide-react'
+import { AssistToggleButton } from '@/components/studio/AssistToggleButton'
 import { ChapterContent } from '@/components/detail/ChapterContent'
 import { ChapterEditor } from '@/components/detail/ChapterEditor'
-import { EmptyWorldOnboarding } from '@/components/detail/EmptyWorldOnboarding'
 import { PageShell } from '@/components/layout/PageShell'
 import { NwButton } from '@/components/ui/nw-button'
 import { GlassSurface } from '@/components/ui/glass-surface'
-import { getLlmApiErrorMessage } from '@/lib/llmErrorMessages'
-import { api, ApiError } from '@/services/api'
+import { api } from '@/services/api'
 import { novelKeys } from '@/hooks/novel/keys'
 import { useUpdateChapter } from '@/hooks/novel/useUpdateChapter'
 import { useCreateChapter } from '@/hooks/novel/useCreateChapter'
 import { useDeleteChapter } from '@/hooks/novel/useDeleteChapter'
+import { useStudioOnboardingState } from '@/hooks/novel/useStudioOnboardingState'
 import { useWorldEntities } from '@/hooks/world/useEntities'
 import { useWorldSystems } from '@/hooks/world/useSystems'
 import { useBootstrapStatus, useTriggerBootstrap } from '@/hooks/world/useBootstrap'
-import { WorldGenerationDialog } from '@/components/world-model/shared/WorldGenerationDialog'
-import { LABELS } from '@/constants/labels'
 import { useUiLocale } from '@/contexts/UiLocaleContext'
 import { formatRelativeTime } from '@/lib/formatRelativeTime'
 import { downloadTextFile } from '@/lib/downloadTextFile'
@@ -35,32 +33,33 @@ import {
 } from '@/lib/chaptersPlainText'
 import { useDebouncedAutoSave } from '@/hooks/useDebouncedAutoSave'
 import { useContinuationSetupState } from '@/hooks/novel/useContinuationSetupState'
-import { dismissWorldOnboarding, isWorldOnboardingDismissed } from '@/lib/worldOnboardingStorage'
+import { useStudioArtifactState } from '@/hooks/novel/useStudioArtifactState'
 import { getActiveWarnings, setActiveWarnings } from '@/lib/postcheckActiveWarningsStorage'
 import { getWhitelist, addToWhitelist } from '@/lib/postcheckWhitelistStorage'
 import { DriftWarningPopover } from '@/components/generation/DriftWarningPopover'
 import { NovelShellLayout } from '@/components/novel-shell/NovelShellLayout'
 import { NovelShellRail } from '@/components/novel-shell/NovelShellRail'
 import { ArtifactStage } from '@/components/novel-shell/ArtifactStage'
-import { StudioAssistantPanel } from '@/components/studio/StudioAssistantPanel'
 import { InjectionSummaryPanel } from '@/components/studio/panels/InjectionSummaryPanel'
 import { StudioNavigationRail } from '@/components/studio/rail/StudioNavigationRail'
+import { StudioSupportRail } from '@/components/studio/rail/StudioSupportRail'
+import { StudioOnboardingStage } from '@/components/studio/stages/StudioOnboardingStage'
 import { ContinuationSetupStage } from '@/components/studio/stages/ContinuationSetupStage'
-import { StudioEntityStage } from '@/components/studio/stages/StudioEntityStage'
-import { StudioDraftReviewStage } from '@/components/studio/stages/StudioDraftReviewStage'
 import { StudioRelationshipStage } from '@/components/studio/stages/StudioRelationshipStage'
 import { StudioSystemStage } from '@/components/studio/stages/StudioSystemStage'
 import { ContinuationResultsStage } from '@/components/studio/stages/ContinuationResultsStage'
 import { useNovelShell } from '@/components/novel-shell/NovelShellContext'
 import {
-  readNovelShellArtifactPanelSearchParams,
-  readResultsProvenanceSearchParams,
+  readWorldEntryHandoffSearchParams,
+  readWorldEntryPendingSearchParams,
   setAtlasStudioOriginSearchParams,
   setNovelShellArtifactPanelSearchParams,
   setAtlasReviewKindSearchParams,
   setResultsProvenanceSearchParams,
   setAtlasSuggestionTargetSearchParams,
   setAtlasTabSearchParams,
+  setWorldEntryHandoffSearchParams,
+  setWorldEntryPendingSearchParams,
   setStudioChapterSearchParams,
   setStudioEntityStageSearchParams,
   setStudioRelationshipStageSearchParams,
@@ -70,72 +69,127 @@ import {
   setStudioStageSearchParams,
 } from '@/components/novel-shell/NovelShellRouteState'
 import { useNovelCopilot } from '@/components/novel-copilot/NovelCopilotContext'
-import { NovelCopilotDrawer } from '@/components/novel-copilot/NovelCopilotDrawer'
+import { NovelCopilotDrawerFallback } from '@/components/novel-copilot/NovelCopilotDrawerFallback'
 import {
+  buildWholeBookCopilotLaunchArgs,
   buildCurrentEntityCopilotLaunchArgs,
   buildRelationshipResearchCopilotLaunchArgs,
 } from '@/components/novel-copilot/novelCopilotLauncher'
 import { useStudioCopilotTargetNavigation } from '@/components/novel-copilot/useCopilotTargetNavigation'
 import type { TextAnnotation } from '@/components/ui/plain-text-content'
-import type { BootstrapStatus, ContinueDebugSummary } from '@/types/api'
 import {
-  pickInitialInjectionSummaryCategory,
   resolveInjectionSummaryNavigationTarget,
   type InjectionSummaryCategory,
 } from '@/lib/injectionSummaryNavigation'
-import { readGenerationResultsDebug } from '@/lib/generationResultsDebugStorage'
+import {
+  getWindowIndexCopilotStatusMeta,
+  getWindowIndexPollingInterval,
+} from '@/lib/windowIndexStatus'
+import {
+  isWorldEntryPendingExpired,
+  resolvePendingWorldEntryHandoffFromBootstrapJob,
+} from '@/lib/worldEntryHandoff'
+import { resolveStudioWorldEntryStage } from '@/lib/worldEntryLifecycle'
+import type { CopilotReviewKind } from '@/types/copilot'
+import {
+  loadAtlasAssistWorkbench,
+  scheduleAtlasAssistWorkbenchPrefetch,
+} from '@/components/atlas/workbench/atlasAssistWorkbenchLoader'
+import {
+  loadNovelCopilotDrawer,
+  scheduleNovelCopilotDrawerPrefetch,
+} from '@/components/novel-copilot/novelCopilotDrawerLoader'
 
 function countWords(text: string): number {
   return text.replace(/\s/g, '').length
 }
 
 const AUTO_SAVE_DELAY = 3000
-const BOOTSTRAP_RUNNING_STATUSES: BootstrapStatus[] = [
-  'pending',
-  'tokenizing',
-  'extracting',
-  'windowing',
-  'refining',
-]
+const NovelCopilotDrawer = lazy(async () => {
+  const mod = await loadNovelCopilotDrawer()
+  return { default: mod.NovelCopilotDrawer }
+})
+const StudioEntityStage = lazy(async () => {
+  const mod = await import('@/components/studio/stages/StudioEntityStage')
+  return { default: mod.StudioEntityStage }
+})
+const StudioDraftReviewStage = lazy(async () => {
+  const mod = await import('@/components/studio/stages/StudioDraftReviewStage')
+  return { default: mod.StudioDraftReviewStage }
+})
+
+function StudioStagePanelFallback() {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="studio-stage-fallback">
+      <div className="shrink-0 border-b border-[var(--nw-glass-border)] px-6 py-4">
+        <div className="space-y-2">
+          <div className="h-3 w-16 rounded bg-[hsl(var(--foreground)/0.10)]" />
+          <div className="h-6 w-48 rounded bg-[hsl(var(--foreground)/0.12)]" />
+          <div className="h-4 w-80 max-w-full rounded bg-[hsl(var(--foreground)/0.08)]" />
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 p-6">
+        <div className="h-full rounded-[20px] border border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)]" />
+      </div>
+    </div>
+  )
+}
+
+function isUploadEntryLocationState(value: unknown): boolean {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && (value as { novwrEntry?: unknown }).novwrEntry === 'upload'
+  )
+}
 
 export function NovelStudioPage() {
   const { novelId: novelIdParam } = useParams<{ novelId: string }>()
   const navigate = useNavigate()
   const location = useLocation()
-  const [searchParams] = useSearchParams()
-  const locationState = location.state as {
-    streamParams?: unknown
-    novelId?: number
-    studioResultsDebug?: ContinueDebugSummary | null
-  } | null
+  const [searchParams, setSearchParams] = useSearchParams()
   const novelId = Number(novelIdParam)
   const { locale, t } = useUiLocale()
-  const { routeState } = useNovelShell()
+  const { routeState, shellState } = useNovelShell()
+  const { drawerWidth } = shellState
   const { isOpen: isWorkbenchOpen, focusedSessionId, openDrawer } = useNovelCopilot()
   const activeStage = routeState.stage ?? 'chapter'
   const showWorkbenchRail = isWorkbenchOpen && focusedSessionId !== null
+  const worldEntryHandoff = useMemo(
+    () => readWorldEntryHandoffSearchParams(searchParams),
+    [searchParams],
+  )
+  const worldEntryPending = useMemo(
+    () => readWorldEntryPendingSearchParams(searchParams),
+    [searchParams],
+  )
+  const [suppressUploadEntryWorldOnboarding] = useState(
+    () => isUploadEntryLocationState(location.state),
+  )
+  const warmAtlasAssist = useCallback(() => {
+    void loadAtlasAssistWorkbench()
+  }, [])
+
+  useEffect(() => {
+    if (!Number.isFinite(novelId)) return
+    return scheduleAtlasAssistWorkbenchPrefetch()
+  }, [novelId])
+
+  useEffect(() => {
+    if (!Number.isFinite(novelId)) return
+    return scheduleNovelCopilotDrawerPrefetch()
+  }, [novelId])
 
   const [editMode, setEditMode] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
-  const [liveResultsDebugState, setLiveResultsDebugState] = useState<{
-    key: string | null
-    value: ContinueDebugSummary | null
-  }>({
-    key: null,
-    value: null,
-  })
   const [editorContent, setEditorContent] = useState('')
   const [showMoreActions, setShowMoreActions] = useState(false)
-
-  const [worldGenOpen, setWorldGenOpen] = useState(false)
-  const [bootstrapError, setBootstrapError] = useState<string | null>(null)
+  const [assistOpen, setAssistOpen] = useState(true)
 
   const { data: worldEntities = [], isLoading: worldEntitiesLoading } = useWorldEntities(novelId)
   const { data: worldSystems = [], isLoading: worldSystemsLoading } = useWorldSystems(novelId)
-  const { data: bootstrapJob, isLoading: bootstrapLoading } = useBootstrapStatus(novelId)
-  const triggerBootstrap = useTriggerBootstrap(novelId)
   const selectedStudioEntityStillExists = (
     routeState.entityId !== null && worldEntities.some((entity) => entity.id === routeState.entityId)
   )
@@ -156,16 +210,28 @@ export function NovelStudioPage() {
     : worldSystems.find((system) => system.id === effectiveStudioSystemId)?.name ?? null
 
   const { data: novel, isLoading: novelLoading } = useQuery({
-    queryKey: novelKeys.detail(novelId), queryFn: () => api.getNovel(novelId), enabled: !!novelIdParam,
+    queryKey: novelKeys.detail(novelId),
+    queryFn: () => api.getNovel(novelId),
+    enabled: !!novelIdParam,
+    refetchInterval: (query) => getWindowIndexPollingInterval(query.state.data?.window_index ?? null),
   })
-  // Empty-world onboarding (per novel instance, persisted).
-  //
-  // We include novel.created_at in the key to avoid collisions when SQLite reuses ids after deletes.
-  const worldOnboardingDismissed = useMemo(() => (
-    isWorldOnboardingDismissed(novelId, novel?.created_at)
-  ), [novelId, novel?.created_at])
+  const { data: bootstrapJob, isLoading: bootstrapLoading } = useBootstrapStatus(novelId, {
+    refetchWhenMissing: novel?.window_index?.ingest?.bootstrap_plan != null,
+  })
+  const triggerBootstrap = useTriggerBootstrap(novelId)
+  const chaptersMetaEnabled = (
+    !!novelIdParam
+    && (
+      (novel?.window_index?.capabilities?.chapters_available ?? false)
+      || (novel?.total_chapters ?? 0) > 0
+    )
+  )
+  const chaptersMetaPollingInterval = getWindowIndexPollingInterval(novel?.window_index ?? null)
   const { data: chaptersMeta = [] } = useQuery({
-    queryKey: novelKeys.chaptersMeta(novelId), queryFn: () => api.listChaptersMeta(novelId), enabled: !!novelIdParam,
+    queryKey: novelKeys.chaptersMeta(novelId),
+    queryFn: () => api.listChaptersMeta(novelId),
+    enabled: chaptersMetaEnabled,
+    refetchInterval: chaptersMetaPollingInterval,
   })
   const activeChapterNum = useMemo(() => {
     if (
@@ -339,100 +405,77 @@ export function NovelStudioPage() {
   const handleUndo = () => { textareaRef.current?.focus(); document.execCommand('undo') }
   const handleRedo = () => { textareaRef.current?.focus(); document.execCommand('redo') }
 
-  const worldLoading = worldEntitiesLoading || worldSystemsLoading || bootstrapLoading
-  const worldEmpty = worldEntities.length === 0 && worldSystems.length === 0
-  const bootstrapRunning = bootstrapJob
-    ? BOOTSTRAP_RUNNING_STATUSES.includes(bootstrapJob.status)
-    : false
-  const showWorldOnboarding = !worldLoading && !worldOnboardingDismissed && worldEmpty && !bootstrapRunning
-  const artifactPanelState = useMemo(
-    () => readNovelShellArtifactPanelSearchParams(searchParams),
-    [searchParams],
-  )
-  const resultsProvenance = useMemo(
-    () => readResultsProvenanceSearchParams(searchParams),
-    [searchParams],
-  )
-  const canonicalResultsProvenance = useMemo(() => {
-    const continuations = searchParams.get('continuations')?.trim()
-    if (activeStage !== 'results' || activeChapterNum === null || !continuations) return null
-    const totalVariantsRaw = searchParams.get('total_variants')
-    const totalVariants = totalVariantsRaw ? Number(totalVariantsRaw) : null
-    return {
-      chapterNum: activeChapterNum,
-      continuations,
-      totalVariants: totalVariants !== null && Number.isFinite(totalVariants) ? totalVariants : null,
-    }
-  }, [activeChapterNum, activeStage, searchParams])
-  const effectiveResultsProvenance = resultsProvenance ?? canonicalResultsProvenance
-  const hasEphemeralResultsContext = (
-    locationState?.streamParams != null
-    && locationState?.novelId === novelId
-  )
-  const hasResultsContext = activeStage === 'results' || resultsProvenance !== null || hasEphemeralResultsContext
-  const currentResultsDebugKey = useMemo(() => {
-    if (effectiveResultsProvenance) return `persisted:${effectiveResultsProvenance.continuations}`
-    if (hasEphemeralResultsContext) return `ephemeral:${location.key}`
-    return null
-  }, [effectiveResultsProvenance, hasEphemeralResultsContext, location.key])
-  const liveResultsDebug = liveResultsDebugState.key === currentResultsDebugKey
-    ? liveResultsDebugState.value
-    : null
-  const resultsDebug = useMemo(
-    () => (
-      !hasResultsContext
-        ? null
-        : liveResultsDebug
-      ?? (effectiveResultsProvenance
-        ? readGenerationResultsDebug(effectiveResultsProvenance.continuations) ?? locationState?.studioResultsDebug ?? null
-        : locationState?.studioResultsDebug ?? null)
-    ),
-    [effectiveResultsProvenance, hasResultsContext, liveResultsDebug, locationState?.studioResultsDebug],
-  )
-  const injectionSummaryPanelState = useMemo(() => {
-    if (!resultsDebug) return null
-    return {
-      panel: 'injection_summary' as const,
-      injectionCategory: artifactPanelState.injectionCategory ?? pickInitialInjectionSummaryCategory(resultsDebug),
-    }
-  }, [artifactPanelState.injectionCategory, resultsDebug])
-  const showInjectionSummaryRail = artifactPanelState.panel === 'injection_summary' && injectionSummaryPanelState !== null
-
-  const resultsNavigationState = useMemo(() => {
-    if (!hasResultsContext) return null
-    return {
-      ...(locationState ?? {}),
-      studioResultsDebug: resultsDebug ?? null,
-    }
-  }, [hasResultsContext, locationState, resultsDebug])
-  const atlasStudioOrigin = useMemo(() => ({
-    stage: activeStage,
-    chapterNum: activeStage === 'results'
-      ? (effectiveResultsProvenance?.chapterNum ?? activeChapterNum)
-      : activeChapterNum,
-    entityId: routeState.entityId,
-    systemId: routeState.systemId,
-    reviewKind: routeState.reviewKind,
-    resultsProvenance: effectiveResultsProvenance,
-    artifactPanelState: showInjectionSummaryRail ? injectionSummaryPanelState : null,
-  }), [
-    activeChapterNum,
-    activeStage,
+  const windowIndexStatusMeta = getWindowIndexCopilotStatusMeta(novel?.window_index ?? null, locale)
+  const {
+    activeArtifactPanelState,
+    applyActiveArtifactContextSearchParams,
+    atlasStudioOrigin,
     effectiveResultsProvenance,
+    handleResultsDebugChange,
+    hasResultsContext,
     injectionSummaryPanelState,
-    routeState.entityId,
-    routeState.systemId,
-    routeState.reviewKind,
+    resultsDebug,
+    resultsNavigationState,
+    setInjectionSummaryCategory,
     showInjectionSummaryRail,
-  ])
+    toggleInjectionSummaryRail,
+    closeInjectionSummaryRail,
+  } = useStudioArtifactState({
+    novelId,
+    activeStage,
+    activeChapterNum,
+    routeState,
+    location,
+    searchParams,
+    navigate,
+  })
+
+  const applyWorldEntryRouteSearchParams = useCallback((params: URLSearchParams) => {
+    let next = setWorldEntryHandoffSearchParams(params, worldEntryHandoff)
+    next = setWorldEntryPendingSearchParams(next, worldEntryPending)
+    return next
+  }, [worldEntryHandoff, worldEntryPending])
+
+  const setStudioWorldEntryHandoff = useCallback((handoff: ReturnType<typeof readWorldEntryHandoffSearchParams>) => {
+    setSearchParams((prev) => {
+      let next = setWorldEntryHandoffSearchParams(prev, handoff)
+      if (handoff) next = setWorldEntryPendingSearchParams(next, null)
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
+  const setStudioWorldEntryPending = useCallback((pending: ReturnType<typeof readWorldEntryPendingSearchParams>) => {
+    setSearchParams((prev) => {
+      let next = setWorldEntryPendingSearchParams(prev, pending)
+      if (pending) next = setWorldEntryHandoffSearchParams(next, null)
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
+  useEffect(() => {
+    const nextHandoff = resolvePendingWorldEntryHandoffFromBootstrapJob(worldEntryPending, bootstrapJob)
+    if (nextHandoff) {
+      setSearchParams((prev) => {
+        let next = setWorldEntryHandoffSearchParams(prev, nextHandoff)
+        next = setWorldEntryPendingSearchParams(next, null)
+        return next
+      }, { replace: true })
+      return
+    }
+
+    if (!isWorldEntryPendingExpired(worldEntryPending)) return
+
+    setSearchParams((prev) => setWorldEntryPendingSearchParams(prev, null), { replace: true })
+  }, [bootstrapJob, setSearchParams, worldEntryPending])
 
   const navigateToChapterStage = useCallback((chapterNumber: number | null = null) => {
     let nextSearchParams = setStudioChapterSearchParams(new URLSearchParams(), chapterNumber)
     nextSearchParams = setResultsProvenanceSearchParams(nextSearchParams, null)
     nextSearchParams = setNovelShellArtifactPanelSearchParams(nextSearchParams, null)
+    nextSearchParams = applyWorldEntryRouteSearchParams(nextSearchParams)
     const nextSearch = nextSearchParams.toString()
     navigate(nextSearch ? `/novel/${novelId}?${nextSearch}` : `/novel/${novelId}`, { replace: true, state: null })
-  }, [navigate, novelId])
+  }, [applyWorldEntryRouteSearchParams, navigate, novelId])
   const navigateToResultsStage = useCallback((options?: { replace?: boolean }) => {
     let nextSearchParams = setStudioResultsStageSearchParams(new URLSearchParams(), activeChapterNum)
     nextSearchParams = setResultsProvenanceSearchParams(nextSearchParams, null)
@@ -447,61 +490,66 @@ export function NovelStudioPage() {
       nextSearchParams.delete('continuations')
       nextSearchParams.delete('total_variants')
     }
-    nextSearchParams = setNovelShellArtifactPanelSearchParams(nextSearchParams, showInjectionSummaryRail ? injectionSummaryPanelState : null)
+    nextSearchParams = setNovelShellArtifactPanelSearchParams(nextSearchParams, activeArtifactPanelState)
+    nextSearchParams = applyWorldEntryRouteSearchParams(nextSearchParams)
     navigate(`/novel/${novelId}?${nextSearchParams.toString()}`, {
       replace: options?.replace ?? false,
       state: resultsNavigationState,
     })
-  }, [activeChapterNum, effectiveResultsProvenance, injectionSummaryPanelState, navigate, novelId, resultsNavigationState, showInjectionSummaryRail])
+  }, [activeArtifactPanelState, activeChapterNum, applyWorldEntryRouteSearchParams, effectiveResultsProvenance, navigate, novelId, resultsNavigationState])
   const navigateToWriteStage = useCallback(() => {
     let nextSearchParams = setStudioStageSearchParams(new URLSearchParams(), 'write')
     nextSearchParams = setResultsProvenanceSearchParams(nextSearchParams, null)
     nextSearchParams = setNovelShellArtifactPanelSearchParams(nextSearchParams, null)
+    nextSearchParams = applyWorldEntryRouteSearchParams(nextSearchParams)
     navigate(`/novel/${novelId}?${nextSearchParams.toString()}`, { replace: true, state: null })
-  }, [navigate, novelId])
+  }, [applyWorldEntryRouteSearchParams, navigate, novelId])
   const navigateToEntityStage = useCallback((entityId: number | null, options?: {
     chapterNumber?: number | null
     replace?: boolean
   }) => {
     let nextSearchParams = setStudioChapterSearchParams(new URLSearchParams(), options?.chapterNumber ?? activeChapterNum)
     nextSearchParams = setStudioEntityStageSearchParams(nextSearchParams, entityId)
-    nextSearchParams = setResultsProvenanceSearchParams(nextSearchParams, effectiveResultsProvenance)
-    nextSearchParams = setNovelShellArtifactPanelSearchParams(nextSearchParams, showInjectionSummaryRail ? injectionSummaryPanelState : null)
+    nextSearchParams = applyActiveArtifactContextSearchParams(nextSearchParams)
+    nextSearchParams = applyWorldEntryRouteSearchParams(nextSearchParams)
     navigate(`/novel/${novelId}?${nextSearchParams.toString()}`, { replace: options?.replace ?? false, state: resultsNavigationState })
-  }, [activeChapterNum, effectiveResultsProvenance, injectionSummaryPanelState, navigate, novelId, resultsNavigationState, showInjectionSummaryRail])
+  }, [activeChapterNum, applyActiveArtifactContextSearchParams, applyWorldEntryRouteSearchParams, navigate, novelId, resultsNavigationState])
   const navigateToReviewStage = useCallback((reviewKind: 'entities' | 'relationships' | 'systems', options?: {
     chapterNumber?: number | null
     replace?: boolean
   }) => {
     let nextSearchParams = setStudioChapterSearchParams(new URLSearchParams(), options?.chapterNumber ?? activeChapterNum)
     nextSearchParams = setStudioReviewKindSearchParams(nextSearchParams, reviewKind)
-    nextSearchParams = setResultsProvenanceSearchParams(nextSearchParams, effectiveResultsProvenance)
-    nextSearchParams = setNovelShellArtifactPanelSearchParams(nextSearchParams, showInjectionSummaryRail ? injectionSummaryPanelState : null)
+    nextSearchParams = applyActiveArtifactContextSearchParams(nextSearchParams)
+    nextSearchParams = applyWorldEntryRouteSearchParams(nextSearchParams)
     navigate(`/novel/${novelId}?${nextSearchParams.toString()}`, { replace: options?.replace ?? false, state: resultsNavigationState })
-  }, [activeChapterNum, effectiveResultsProvenance, injectionSummaryPanelState, navigate, novelId, resultsNavigationState, showInjectionSummaryRail])
+  }, [activeChapterNum, applyActiveArtifactContextSearchParams, applyWorldEntryRouteSearchParams, navigate, novelId, resultsNavigationState])
   const navigateToRelationshipStage = useCallback((entityId: number | null, options?: {
     chapterNumber?: number | null
     replace?: boolean
   }) => {
     let nextSearchParams = setStudioChapterSearchParams(new URLSearchParams(), options?.chapterNumber ?? activeChapterNum)
     nextSearchParams = setStudioRelationshipStageSearchParams(nextSearchParams, entityId)
-    nextSearchParams = setResultsProvenanceSearchParams(nextSearchParams, effectiveResultsProvenance)
-    nextSearchParams = setNovelShellArtifactPanelSearchParams(nextSearchParams, showInjectionSummaryRail ? injectionSummaryPanelState : null)
+    nextSearchParams = applyActiveArtifactContextSearchParams(nextSearchParams)
+    nextSearchParams = applyWorldEntryRouteSearchParams(nextSearchParams)
     navigate(`/novel/${novelId}?${nextSearchParams.toString()}`, { replace: options?.replace ?? false, state: resultsNavigationState })
-  }, [activeChapterNum, effectiveResultsProvenance, injectionSummaryPanelState, navigate, novelId, resultsNavigationState, showInjectionSummaryRail])
+  }, [activeChapterNum, applyActiveArtifactContextSearchParams, applyWorldEntryRouteSearchParams, navigate, novelId, resultsNavigationState])
   const navigateToSystemStage = useCallback((systemId: number | null, options?: {
     chapterNumber?: number | null
     replace?: boolean
   }) => {
     let nextSearchParams = setStudioChapterSearchParams(new URLSearchParams(), options?.chapterNumber ?? activeChapterNum)
     nextSearchParams = setStudioSystemStageSearchParams(nextSearchParams, systemId)
-    nextSearchParams = setResultsProvenanceSearchParams(nextSearchParams, effectiveResultsProvenance)
-    nextSearchParams = setNovelShellArtifactPanelSearchParams(nextSearchParams, showInjectionSummaryRail ? injectionSummaryPanelState : null)
+    nextSearchParams = applyActiveArtifactContextSearchParams(nextSearchParams)
+    nextSearchParams = applyWorldEntryRouteSearchParams(nextSearchParams)
     navigate(`/novel/${novelId}?${nextSearchParams.toString()}`, { replace: options?.replace ?? false, state: resultsNavigationState })
-  }, [activeChapterNum, effectiveResultsProvenance, injectionSummaryPanelState, navigate, novelId, resultsNavigationState, showInjectionSummaryRail])
+  }, [activeChapterNum, applyActiveArtifactContextSearchParams, applyWorldEntryRouteSearchParams, navigate, novelId, resultsNavigationState])
   const navigateToAtlas = useCallback((params?: URLSearchParams) => {
+    warmAtlasAssist()
+
     const commitNavigation = () => {
-      const nextParams = setAtlasStudioOriginSearchParams(params ?? new URLSearchParams(), atlasStudioOrigin)
+      let nextParams = applyWorldEntryRouteSearchParams(params ?? new URLSearchParams())
+      nextParams = setAtlasStudioOriginSearchParams(nextParams, atlasStudioOrigin)
       const nextSearch = nextParams.toString()
       navigate(nextSearch ? `/world/${novelId}?${nextSearch}` : `/world/${novelId}`)
     }
@@ -519,7 +567,7 @@ export function NovelStudioPage() {
     }
 
     commitNavigation()
-  }, [atlasStudioOrigin, editMode, editorContent, navigate, novelId, saveNowAutoSave])
+  }, [applyWorldEntryRouteSearchParams, atlasStudioOrigin, editMode, editorContent, navigate, novelId, saveNowAutoSave, warmAtlasAssist])
   const handleReturnToArtifact = () => {
     if (hasResultsContext) {
       navigateToResultsStage()
@@ -527,12 +575,6 @@ export function NovelStudioPage() {
     }
     navigateToChapterStage(activeChapterNum)
   }
-  const handleResultsDebugChange = useCallback((debug: ContinueDebugSummary | null) => {
-    setLiveResultsDebugState({
-      key: currentResultsDebugKey,
-      value: debug,
-    })
-  }, [currentResultsDebugKey])
   const handleStudioLocateTarget = useStudioCopilotTargetNavigation({
     navigateToReviewStage,
     navigateToEntityStage: (entityId) => navigateToEntityStage(entityId),
@@ -540,16 +582,6 @@ export function NovelStudioPage() {
     navigateToSystemStage: (systemId) => navigateToSystemStage(systemId),
     navigateToAtlas,
   })
-  const setInjectionSummaryCategory = useCallback((category: InjectionSummaryCategory) => {
-    const nextSearchParams = setNovelShellArtifactPanelSearchParams(new URLSearchParams(location.search), {
-      panel: 'injection_summary',
-      injectionCategory: category,
-    })
-    navigate(
-      { pathname: location.pathname, search: nextSearchParams.toString() },
-      { replace: true, state: resultsNavigationState },
-    )
-  }, [location.pathname, location.search, navigate, resultsNavigationState])
   const handleOpenInjectionCategory = useCallback((tab: InjectionSummaryCategory) => {
     navigateToAtlas(setAtlasTabSearchParams(new URLSearchParams(), tab))
   }, [navigateToAtlas])
@@ -617,38 +649,79 @@ export function NovelStudioPage() {
     }
     return undefined
   }, [activeStage, effectiveStudioEntityId, effectiveStudioEntityName, openEntityCopilot, openRelationshipCopilot, t])
-
-  const handleDismissWorldOnboarding = () => {
-    dismissWorldOnboarding(novelId, novel?.created_at)
-    navigate(`/world/${novelId}`)
-  }
-
-  const handleTriggerBootstrap = () => {
-    setBootstrapError(null)
-    triggerBootstrap.mutate(
-      { mode: 'initial' },
-      {
-        onError: (err) => {
-          if (err instanceof ApiError) {
-            const llmMessage = getLlmApiErrorMessage(err, locale)
-            if (llmMessage) {
-              setBootstrapError(llmMessage)
-              return
-            }
-            if (err.code === 'bootstrap_already_running') {
-              setBootstrapError(LABELS.BOOTSTRAP_SCANNING)
-              return
-            }
-            if (err.code === 'bootstrap_no_text') {
-              setBootstrapError(LABELS.BOOTSTRAP_NO_TEXT)
-              return
-            }
-          }
-          setBootstrapError(LABELS.ERROR_BOOTSTRAP_TRIGGER_FAILED)
+  const worldLoading = worldEntitiesLoading || worldSystemsLoading || bootstrapLoading
+  const {
+    bootstrapError,
+    chaptersAvailable,
+    demoGuideProgressCount,
+    demoGuideState,
+    handleDismissWorldOnboarding,
+    handleOpenDemoAtlas,
+    handleOpenDemoChapter,
+    handleOpenDemoCopilot,
+    handleOpenDemoWriteStage,
+    handleReopenDemoGuide,
+    handleSkipDemoGuide,
+    handleTriggerBootstrap,
+    preparationGate,
+    showDemoGuideExpanded,
+    showDemoGuideReopen,
+    showWorldOnboarding,
+    worldGenOpen,
+    setWorldGenOpen,
+  } = useStudioOnboardingState({
+    novelId,
+    novel,
+    locale,
+    t,
+    searchParams,
+    activeStage,
+    activeChapterNum,
+    chapterLoading,
+    showWorkbenchRail,
+    worldEntityCount: worldEntities.length,
+    worldSystemCount: worldSystems.length,
+    worldLoading,
+    bootstrapLoading,
+    bootstrapJob,
+    bootstrapTriggerPending: triggerBootstrap.isPending,
+    suppressWorldOnboarding: suppressUploadEntryWorldOnboarding,
+    triggerInitialBootstrap: (handlers) => {
+      triggerBootstrap.mutate(
+        { mode: 'initial' },
+        {
+          onError: (error) => {
+            handlers?.onError?.(error)
+          },
         },
-      },
-    )
-  }
+      )
+    },
+    openDemoChapter: () => navigateToChapterStage(activeChapterNum),
+    openDemoWriteStage: navigateToWriteStage,
+    openDemoAtlas: () => navigateToAtlas(),
+    openDemoCopilot: () => {
+      openDrawer(...buildWholeBookCopilotLaunchArgs(routeState))
+    },
+    dismissWorldOnboardingRoute: () => {
+      navigate(`/world/${novelId}`)
+    },
+  })
+
+  const handleToggleAssist = useCallback(() => {
+    setAssistOpen(current => !current)
+  }, [])
+
+  const assistRailPinnedOpen = (
+    showDemoGuideExpanded
+    || showDemoGuideReopen
+    || resolveStudioWorldEntryStage({
+      worldEntityCount: worldEntities.length,
+      worldSystemCount: worldSystems.length,
+      handoff: worldEntryHandoff,
+      pending: worldEntryPending,
+    }) !== 'routine'
+  )
+  const showAssistRail = assistOpen || assistRailPinnedOpen
 
   if (novelLoading) {
     return (
@@ -669,66 +742,71 @@ export function NovelStudioPage() {
   const currentChapterIdentity = chapter ?? currentMeta ?? null
   const displayTitle = currentChapterIdentity ? getChapterDisplayTitle(currentChapterIdentity.title) : ''
   const activeChapterReference = currentChapterIdentity ? formatChapterBadgeLabel(currentChapterIdentity) : null
+  const showEntryStage = preparationGate !== null || showWorldOnboarding
 
   return (
     <PageShell className="h-screen" navbarProps={{ position: 'static' }} mainClassName="min-h-0 flex-1 overflow-hidden">
-      {showWorldOnboarding ? (
-        <>
-          <EmptyWorldOnboarding
-            onGenerate={() => setWorldGenOpen(true)}
-            onBootstrap={handleTriggerBootstrap}
-            onDismiss={handleDismissWorldOnboarding}
-            bootstrapPending={triggerBootstrap.isPending}
-            bootstrapError={bootstrapError}
-          />
-          <WorldGenerationDialog novelId={novelId} open={worldGenOpen} onOpenChange={setWorldGenOpen} />
-        </>
+      {showEntryStage ? (
+        <StudioOnboardingStage
+          novelId={novelId}
+          preparationGate={preparationGate}
+          showWorldOnboarding={showWorldOnboarding}
+          bootstrapPending={triggerBootstrap.isPending}
+          bootstrapError={bootstrapError}
+          chaptersAvailable={chaptersAvailable}
+          worldGenOpen={worldGenOpen}
+          onWorldGenOpenChange={setWorldGenOpen}
+          onTriggerBootstrap={handleTriggerBootstrap}
+          onDismissWorldOnboarding={handleDismissWorldOnboarding}
+        />
       ) : (
-        <NovelShellLayout className="flex-1 min-h-0 p-3 gap-3 overflow-hidden">
-          <NovelShellRail className="w-[280px] shrink-0 flex flex-col min-h-0 h-full rounded-[16px] border border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)] backdrop-blur-[24px] shadow-[var(--nw-copilot-panel-shadow)] overflow-hidden">
-            <StudioNavigationRail
-              novelTitle={novel.title}
-              searchQuery={searchQuery}
-              onSearchQueryChange={setSearchQuery}
-              chapters={filteredChapters.map(c => ({
-                chapterNumber: c.chapter_number,
-                label: formatChapterLabel(c),
-              }))}
-              selectedChapterNumber={activeChapterNum}
-              onSelectChapter={(chapterNumber) => {
-                cancelAutoSave()
-                setEditingTitle(false)
-                setEditorContent('')
-                setEditMode(false)
-                setShowMoreActions(false)
-                navigateToChapterStage(chapterNumber)
-              }}
-              chapterCount={chaptersMeta.length}
-              onCreateChapter={handleCreateChapter}
-              isCreating={createChapter.isPending}
-              latestChapterReference={latestChapterReference}
-              onContinuation={() => {
-                // Save-first: if editing, flush autosave before switching stage
-                if (editMode) {
-                  saveNowAutoSave(editorContent)
-                    .then(() => {
-                      setEditMode(false)
-                      navigateToWriteStage()
-                    })
-                    .catch(() => {
-                      // Save failed — stay on chapter stage, user can retry
-                    })
-                } else {
-                  navigateToWriteStage()
-                }
-              }}
-              onOpenAtlas={() => {
-                setShowMoreActions(false)
-                navigateToAtlas()
-              }}
-              activeStage={activeStage}
-            />
-          </NovelShellRail>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 p-3">
+          <NovelShellLayout className="flex-1 min-h-0 gap-3 overflow-hidden p-0">
+            <NovelShellRail className="w-[280px] shrink-0 flex flex-col min-h-0 h-full rounded-[16px] border border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)] backdrop-blur-[24px] shadow-[var(--nw-copilot-panel-shadow)] overflow-hidden">
+              <StudioNavigationRail
+                novelTitle={novel.title}
+                searchQuery={searchQuery}
+                onSearchQueryChange={setSearchQuery}
+                chapters={filteredChapters.map(c => ({
+                  chapterNumber: c.chapter_number,
+                  label: formatChapterLabel(c),
+                }))}
+                selectedChapterNumber={activeChapterNum}
+                onSelectChapter={(chapterNumber) => {
+                  cancelAutoSave()
+                  setEditingTitle(false)
+                  setEditorContent('')
+                  setEditMode(false)
+                  setShowMoreActions(false)
+                  navigateToChapterStage(chapterNumber)
+                }}
+                chapterCount={chaptersMeta.length}
+                onCreateChapter={handleCreateChapter}
+                isCreating={createChapter.isPending}
+                latestChapterReference={latestChapterReference}
+                onContinuation={() => {
+                  // Save-first: if editing, flush autosave before switching stage
+                  if (editMode) {
+                    saveNowAutoSave(editorContent)
+                      .then(() => {
+                        setEditMode(false)
+                        navigateToWriteStage()
+                      })
+                      .catch(() => {
+                        // Save failed — stay on chapter stage, user can retry
+                      })
+                  } else {
+                    navigateToWriteStage()
+                  }
+                }}
+                onOpenAtlas={() => {
+                  setShowMoreActions(false)
+                  navigateToAtlas()
+                }}
+                onWarmAtlas={warmAtlasAssist}
+                activeStage={activeStage}
+              />
+            </NovelShellRail>
 
           {/* ── Content Area ── */}
           <ArtifactStage className="flex-1 min-w-0 flex flex-col rounded-[16px] border border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)] backdrop-blur-[24px] shadow-[var(--nw-copilot-panel-shadow)] overflow-hidden">
@@ -739,17 +817,10 @@ export function NovelStudioPage() {
                 activeChapterNum={activeChapterNum}
                 activeChapterReference={activeChapterReference}
                 showInjectionSummaryRail={showInjectionSummaryRail}
-                onToggleInjectionSummaryRail={() => {
-                    const nextSearchParams = setNovelShellArtifactPanelSearchParams(
-                      new URLSearchParams(location.search),
-                      showInjectionSummaryRail ? null : injectionSummaryPanelState,
-                    )
-                    navigate(
-                      { pathname: location.pathname, search: nextSearchParams.toString() },
-                      { replace: true, state: resultsNavigationState },
-                    )
-                  }}
+                onToggleInjectionSummaryRail={toggleInjectionSummaryRail}
                   onDebugChange={handleResultsDebugChange}
+                  assistOpen={showAssistRail}
+                  onToggleAssist={handleToggleAssist}
                 />
               </div>
             ) : null}
@@ -773,23 +844,30 @@ export function NovelStudioPage() {
                 temperature={continuationState.temperature}
                 onTemperatureChange={continuationState.setTemperature}
                 onGenerate={continuationState.handleGenerate}
+                assistOpen={showAssistRail}
+                onToggleAssist={handleToggleAssist}
               />
             ) : activeStage === 'entity' ? (
-              <StudioEntityStage
-                novelId={novelId}
-                entityId={effectiveStudioEntityId}
-                onReturnToArtifact={hasResultsContext ? handleReturnToArtifact : undefined}
-                onOpenCopilot={openEntityCopilot}
-                onOpenAtlas={() => {
-                  const nextParams = setAtlasSuggestionTargetSearchParams(new URLSearchParams(), {
-                    resource: 'entity',
-                    resource_id: effectiveStudioEntityId,
-                    label: 'entity',
-                    tab: 'entities',
-                  })
-                  navigateToAtlas(nextParams)
-                }}
-              />
+              <Suspense fallback={<StudioStagePanelFallback />}>
+                <StudioEntityStage
+                  novelId={novelId}
+                  entityId={effectiveStudioEntityId}
+                  onReturnToArtifact={hasResultsContext ? handleReturnToArtifact : undefined}
+                  onOpenCopilot={openEntityCopilot}
+                  onOpenAtlas={() => {
+                    const nextParams = setAtlasSuggestionTargetSearchParams(new URLSearchParams(), {
+                      resource: 'entity',
+                      resource_id: effectiveStudioEntityId,
+                      label: 'entity',
+                      tab: 'entities',
+                    })
+                    navigateToAtlas(nextParams)
+                  }}
+                  onWarmAtlas={warmAtlasAssist}
+                  assistOpen={showAssistRail}
+                  onToggleAssist={handleToggleAssist}
+                />
+              </Suspense>
             ) : activeStage === 'relationship' ? (
               <StudioRelationshipStage
                 novelId={novelId}
@@ -806,21 +884,29 @@ export function NovelStudioPage() {
                   })
                   navigateToAtlas(nextParams)
                 }}
+                onWarmAtlas={warmAtlasAssist}
+                assistOpen={showAssistRail}
+                onToggleAssist={handleToggleAssist}
               />
             ) : activeStage === 'review' ? (
-              <StudioDraftReviewStage
-                novelId={novelId}
-                reviewKind={routeState.reviewKind ?? 'entities'}
-                onReviewKindChange={(kind) => navigateToReviewStage(kind, { replace: true })}
-                onOpenEntity={(entityId) => navigateToEntityStage(entityId, { replace: true })}
-                onOpenRelationships={(entityId) => navigateToRelationshipStage(entityId, { replace: true })}
-                onOpenSystem={(systemId) => navigateToSystemStage(systemId, { replace: true })}
-                onOpenAtlas={() => {
-                  const nextParams = setAtlasReviewKindSearchParams(new URLSearchParams(), routeState.reviewKind ?? 'entities')
-                  navigateToAtlas(nextParams)
-                }}
-                onReturnToArtifact={hasResultsContext ? handleReturnToArtifact : undefined}
-              />
+              <Suspense fallback={<StudioStagePanelFallback />}>
+                <StudioDraftReviewStage
+                  novelId={novelId}
+                  reviewKind={routeState.reviewKind ?? 'entities'}
+                  onReviewKindChange={(kind) => navigateToReviewStage(kind, { replace: true })}
+                  onOpenEntity={(entityId) => navigateToEntityStage(entityId, { replace: true })}
+                  onOpenRelationships={(entityId) => navigateToRelationshipStage(entityId, { replace: true })}
+                  onOpenSystem={(systemId) => navigateToSystemStage(systemId, { replace: true })}
+                  onOpenAtlas={() => {
+                    const nextParams = setAtlasReviewKindSearchParams(new URLSearchParams(), routeState.reviewKind ?? 'entities')
+                    navigateToAtlas(nextParams)
+                  }}
+                  onWarmAtlas={warmAtlasAssist}
+                  onReturnToArtifact={hasResultsContext ? handleReturnToArtifact : undefined}
+                  assistOpen={showAssistRail}
+                  onToggleAssist={handleToggleAssist}
+                />
+              </Suspense>
             ) : activeStage === 'system' ? (
               <StudioSystemStage
                 novelId={novelId}
@@ -835,7 +921,10 @@ export function NovelStudioPage() {
                   })
                   navigateToAtlas(nextParams)
                 }}
+                onWarmAtlas={warmAtlasAssist}
                 onReturnToArtifact={hasResultsContext ? handleReturnToArtifact : undefined}
+                assistOpen={showAssistRail}
+                onToggleAssist={handleToggleAssist}
               />
             ) : (
               /* ── Chapter Stage ── */
@@ -978,6 +1067,8 @@ export function NovelStudioPage() {
                             </>
                           ) : null}
                         </div>
+
+                        <AssistToggleButton active={showAssistRail} onClick={handleToggleAssist} />
                       </div>
                     </div>
                   </div>
@@ -1010,36 +1101,61 @@ export function NovelStudioPage() {
           </ArtifactStage>
 
           {showWorkbenchRail ? (
-            <NovelCopilotDrawer novelId={novelId} onLocateTarget={handleStudioLocateTarget} />
+            <Suspense fallback={<NovelCopilotDrawerFallback width={drawerWidth} />}>
+              <NovelCopilotDrawer novelId={novelId} onLocateTarget={handleStudioLocateTarget} />
+            </Suspense>
           ) : showInjectionSummaryRail && resultsDebug ? (
             <NovelShellRail className="w-[360px] shrink-0 flex flex-col min-h-0 h-full rounded-[16px] border border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)] backdrop-blur-[24px] shadow-[var(--nw-copilot-panel-shadow)] overflow-hidden">
               <InjectionSummaryPanel
                 debug={resultsDebug}
                 activeCategory={injectionSummaryPanelState?.injectionCategory ?? undefined}
                 onActiveCategoryChange={setInjectionSummaryCategory}
-                onClose={() => navigate(
-                  {
-                    pathname: location.pathname,
-                    search: setNovelShellArtifactPanelSearchParams(new URLSearchParams(location.search), null).toString(),
-                  },
-                  { replace: true, state: resultsNavigationState },
-                )}
+                onClose={closeInjectionSummaryRail}
                 onOpenAtlas={handleOpenInjectionCategory}
+                onWarmAtlas={warmAtlasAssist}
                 onSelectItem={handleOpenInjectionItem}
               />
             </NovelShellRail>
-          ) : (
-            <NovelShellRail className="w-[360px] shrink-0 flex flex-col min-h-0 h-full rounded-[16px] border border-[var(--nw-glass-border)] bg-[var(--nw-glass-bg)] backdrop-blur-[24px] shadow-[var(--nw-copilot-panel-shadow)] overflow-hidden p-3">
-              <StudioAssistantPanel
-                novelId={novelId}
-                activeChapterReference={activeChapterReference}
-                latestChapterReference={latestChapterReference}
-                chapterCount={chaptersMeta.length}
-                contextualCopilotAction={contextualCopilotAction}
-              />
-            </NovelShellRail>
-          )}
-        </NovelShellLayout>
+          ) : showAssistRail ? (
+            <StudioSupportRail
+              novelId={novelId}
+              latestChapterReference={latestChapterReference}
+              chapterCount={chaptersMeta.length}
+              worldEntityCount={worldEntities.length}
+              worldSystemCount={worldSystems.length}
+              windowIndexStatus={windowIndexStatusMeta}
+              demoGuideState={demoGuideState}
+              demoGuideProgressCount={demoGuideProgressCount}
+              showDemoGuideExpanded={showDemoGuideExpanded}
+              showDemoGuideReopen={showDemoGuideReopen}
+              onOpenDemoChapter={handleOpenDemoChapter}
+              onOpenDemoAtlas={handleOpenDemoAtlas}
+              onOpenDemoWriteStage={handleOpenDemoWriteStage}
+              onOpenDemoCopilot={handleOpenDemoCopilot}
+              onSkipDemoGuide={handleSkipDemoGuide}
+              onReopenDemoGuide={handleReopenDemoGuide}
+              onOpenWholeBookCopilot={() => {
+                openDrawer(...buildWholeBookCopilotLaunchArgs(routeState))
+              }}
+              worldEntryHandoff={worldEntryHandoff}
+              worldEntryPending={worldEntryPending}
+              onWorldEntryHandoffChange={setStudioWorldEntryHandoff}
+              onWorldEntryPendingChange={setStudioWorldEntryPending}
+              onOpenAtlas={() => {
+                setShowMoreActions(false)
+                navigateToAtlas()
+              }}
+              onOpenAtlasReview={(reviewKind: CopilotReviewKind) => {
+                setShowMoreActions(false)
+                const nextParams = setAtlasReviewKindSearchParams(new URLSearchParams(), reviewKind)
+                navigateToAtlas(nextParams)
+              }}
+              onWarmAtlas={warmAtlasAssist}
+              contextualCopilotAction={contextualCopilotAction}
+            />
+          ) : null}
+          </NovelShellLayout>
+        </div>
       )}
     </PageShell>
   )

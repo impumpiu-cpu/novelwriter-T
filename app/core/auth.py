@@ -3,8 +3,11 @@
 
 """JWT authentication utilities."""
 
+import hashlib
 import logging
 import secrets
+from contextlib import nullcontext
+from typing import Any
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -40,8 +43,9 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 SESSION_COOKIE_NAME = "novwr_session"
-AUTH_PROVIDER_INVITE = "invite"
+AUTH_PROVIDER_INVITE_CODE = "invite_code"
 AUTH_PROVIDER_GITHUB = "github"
+AUTH_PROVIDER_HOSTED_PASSWORD = "hosted_password"
 _DEFAULT_INTERNAL_USERNAME_SEED = "user"
 _INTERNAL_USERNAME_SUFFIX_HEX_BYTES = 4
 _OAUTH_STATE_TOKEN_KIND = "hosted_oauth_state"
@@ -181,6 +185,29 @@ def _normalize_provider_user_id(provider_user_id: str) -> str:
     return normalized
 
 
+def normalize_invite_code(invite_code: str) -> str:
+    normalized = (invite_code or "").strip()
+    if not normalized:
+        raise ValueError("invite code cannot be empty")
+    return normalized
+
+
+def hash_invite_code(invite_code: str) -> str:
+    normalized = normalize_invite_code(invite_code)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def normalize_hosted_nickname(value: str) -> str:
+    normalized = (value or "").strip()
+    if not normalized:
+        raise ValueError("nickname cannot be empty")
+    return normalized
+
+
+def normalize_hosted_login_handle(value: str) -> str:
+    return normalize_hosted_nickname(value).casefold()
+
+
 def _normalize_optional_identity_value(value: str | None) -> str | None:
     normalized = (value or "").strip()
     return normalized or None
@@ -229,133 +256,13 @@ def _touch_auth_identity(
     return user
 
 
-def _get_legacy_invite_user(
+def _finish_new_hosted_user_setup(
     db: Session,
-    *,
-    provider_user_id: str,
-) -> User | None:
-    return (
-        db.query(User)
-        .filter(User.nickname == provider_user_id)
-        .order_by(User.created_at.asc(), User.id.asc())
-        .first()
-    )
-
-
-def _repair_missing_auth_identity(
-    db: Session,
-    *,
     user: User,
-    provider: str,
-    provider_user_id: str,
-    provider_login: str | None = None,
-    provider_email: str | None = None,
-) -> User:
-    if user.id is None:
-        raise RuntimeError("Auth identity repair requires a persisted user id")
-    if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
-
-    normalized_provider = _normalize_auth_provider(provider)
-    normalized_provider_user_id = _normalize_provider_user_id(provider_user_id)
-    normalized_provider_login = _normalize_optional_identity_value(provider_login)
-    normalized_provider_email = _normalize_optional_identity_value(provider_email)
-    repaired_identity = AuthIdentity(
-        user_id=user.id,
-        provider=normalized_provider,
-        provider_user_id=normalized_provider_user_id,
-        provider_login=normalized_provider_login,
-        provider_email=normalized_provider_email,
-        last_login_at=datetime.now(timezone.utc),
-    )
-    db.add(repaired_identity)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        existing_identity = _get_auth_identity(
-            db,
-            provider=normalized_provider,
-            provider_user_id=normalized_provider_user_id,
-        )
-        if existing_identity is None:
-            raise
-        return _touch_auth_identity(
-            db,
-            existing_identity,
-            provider_login=normalized_provider_login,
-            provider_email=normalized_provider_email,
-        )
-
-    db.refresh(user)
-    return user
-
-
-def _raise_invite_fallback_identity_conflict(invite_provider_user_id: str) -> None:
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail={
-            "code": "hosted_auth_invite_fallback_conflict",
-            "message": (
-                "Hosted OAuth signup could not reserve the matching invite login handle; "
-                "the visible nickname is already owned by another user."
-            ),
-            "provider": AUTH_PROVIDER_INVITE,
-            "provider_user_id": invite_provider_user_id,
-        },
-    )
-
-
-def _ensure_invite_fallback_identity(
-    db: Session,
     *,
-    user: User,
-    nickname_hint: str | None = None,
-    strict: bool,
-) -> bool:
-    invite_provider_user_id = _normalize_optional_identity_value(user.nickname) or _normalize_optional_identity_value(
-        nickname_hint
-    )
-    if invite_provider_user_id is None:
-        if strict:
-            raise RuntimeError("Hosted OAuth users require a nickname-backed invite fallback identity")
-        logger.warning("Hosted user %s has no nickname-backed invite fallback identity to repair", user.id)
-        return False
-    if user.id is None:
-        raise RuntimeError("Hosted auth fallback identities require a flushed user id")
-
-    existing_identity = _get_auth_identity(
-        db,
-        provider=AUTH_PROVIDER_INVITE,
-        provider_user_id=invite_provider_user_id,
-    )
-    if existing_identity is not None:
-        if existing_identity.user_id != user.id:
-            if strict:
-                _raise_invite_fallback_identity_conflict(invite_provider_user_id)
-            logger.warning(
-                "Hosted user %s is missing invite fallback identity %r because it is owned by user %s",
-                user.id,
-                invite_provider_user_id,
-                existing_identity.user_id,
-            )
-            return False
-        existing_identity.provider_login = invite_provider_user_id
-        return True
-
-    db.add(
-        AuthIdentity(
-            user_id=user.id,
-            provider=AUTH_PROVIDER_INVITE,
-            provider_user_id=invite_provider_user_id,
-            provider_login=invite_provider_user_id,
-        )
-    )
-    return True
-
-
-def _finish_new_hosted_user_setup(db: Session, user: User) -> None:
-    record_event(db, user.id, "signup")
+    signup_meta: dict[str, Any] | None = None,
+) -> None:
+    record_event(db, user.id, "signup", meta=signup_meta)
 
     try:
         from app.core.seed_demo import seed_demo_novel
@@ -363,6 +270,41 @@ def _finish_new_hosted_user_setup(db: Session, user: User) -> None:
         seed_demo_novel(db, user)
     except Exception:
         logger.exception("Failed to seed demo novel for user %s", user.id)
+
+
+def _raise_invite_code_invalid() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={"code": "invite_code_invalid", "message": "Invalid invite code"},
+    )
+
+
+def _raise_invite_code_already_claimed() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": "invite_code_already_claimed",
+            "message": "This invite code has already been activated. Please sign in with nickname and password.",
+        },
+    )
+
+
+def _raise_hosted_nickname_taken() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": "hosted_login_nickname_taken",
+            "message": "This nickname is already in use. Please choose a different nickname.",
+        },
+    )
+
+
+def _raise_invalid_hosted_login_credentials() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def resolve_or_provision_hosted_user_for_identity(
@@ -374,6 +316,8 @@ def resolve_or_provision_hosted_user_for_identity(
     username_seed: str | None = None,
     provider_login: str | None = None,
     provider_email: str | None = None,
+    signup_meta: dict[str, Any] | None = None,
+    use_signup_lock: bool = True,
 ) -> tuple[User, bool]:
     """Resolve an existing hosted user by auth identity, or provision a new one.
 
@@ -393,23 +337,14 @@ def resolve_or_provision_hosted_user_for_identity(
     resolved_username_seed = (
         username_seed or resolved_provider_login or resolved_nickname or normalized_provider_user_id
     )
-    should_attach_invite_fallback = normalized_provider != AUTH_PROVIDER_INVITE
-    invite_fallback_provider_user_id = resolved_nickname if should_attach_invite_fallback else None
-
-    with hosted_signup_lock(db):
+    lock_context = hosted_signup_lock(db) if use_signup_lock else nullcontext()
+    with lock_context:
         existing_identity = _get_auth_identity(
             db,
             provider=normalized_provider,
             provider_user_id=normalized_provider_user_id,
         )
         if existing_identity is not None:
-            if should_attach_invite_fallback and existing_identity.user is not None:
-                _ensure_invite_fallback_identity(
-                    db,
-                    user=existing_identity.user,
-                    nickname_hint=invite_fallback_provider_user_id,
-                    strict=False,
-                )
             user = _touch_auth_identity(
                 db,
                 existing_identity,
@@ -417,26 +352,6 @@ def resolve_or_provision_hosted_user_for_identity(
                 provider_email=resolved_provider_email,
             )
             return user, False
-
-        if normalized_provider == AUTH_PROVIDER_INVITE:
-            legacy_user = _get_legacy_invite_user(
-                db,
-                provider_user_id=normalized_provider_user_id,
-            )
-            if legacy_user is not None:
-                logger.warning(
-                    "Repairing missing hosted invite auth identity for user %s and nickname %r",
-                    legacy_user.id,
-                    normalized_provider_user_id,
-                )
-                repaired_user = _repair_missing_auth_identity(
-                    db,
-                    user=legacy_user,
-                    provider=normalized_provider,
-                    provider_user_id=normalized_provider_user_id,
-                    provider_login=resolved_provider_login,
-                )
-                return repaired_user, False
 
         ensure_hosted_user_capacity(db)
 
@@ -460,13 +375,6 @@ def resolve_or_provision_hosted_user_for_identity(
                         last_login_at=datetime.now(timezone.utc),
                     )
                 )
-                if should_attach_invite_fallback:
-                    _ensure_invite_fallback_identity(
-                        db,
-                        user=user,
-                        nickname_hint=invite_fallback_provider_user_id,
-                        strict=True,
-                    )
                 db.commit()
             except IntegrityError:
                 db.rollback()
@@ -483,22 +391,149 @@ def resolve_or_provision_hosted_user_for_identity(
                         provider_email=resolved_provider_email,
                     )
                     return resolved_user, False
-                if should_attach_invite_fallback and invite_fallback_provider_user_id is not None:
-                    conflicting_invite_identity = _get_auth_identity(
-                        db,
-                        provider=AUTH_PROVIDER_INVITE,
-                        provider_user_id=invite_fallback_provider_user_id,
-                    )
-                    if conflicting_invite_identity is not None:
-                        _raise_invite_fallback_identity_conflict(invite_fallback_provider_user_id)
                 continue
 
             db.refresh(user)
-            _finish_new_hosted_user_setup(db, user)
+            _finish_new_hosted_user_setup(db, user, signup_meta=signup_meta)
             return user, True
 
     raise RuntimeError(
         f"Failed to provision hosted user for identity {normalized_provider}:{normalized_provider_user_id}"
+    )
+
+
+def activate_hosted_user_for_invite_code(
+    db: Session,
+    *,
+    invite_code: str,
+    nickname: str,
+    password: str,
+    signup_meta: dict[str, Any] | None = None,
+) -> User:
+    settings = get_settings()
+    if settings.deploy_mode != "hosted":
+        raise RuntimeError("Hosted invite-code activation is only valid in hosted mode")
+
+    normalized_invite_code = normalize_invite_code(invite_code)
+    invite_provider_user_id = hash_invite_code(normalized_invite_code)
+    invite_entry = settings.hosted_invite_code_lookup.get(normalized_invite_code)
+    invite_label = invite_entry.label if invite_entry is not None else None
+    try:
+        resolved_nickname = normalize_hosted_nickname(nickname)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invite_nickname_required",
+                "message": "nickname is required when activating a personal invite code",
+            },
+        ) from exc
+    login_handle = normalize_hosted_login_handle(resolved_nickname)
+
+    with hosted_signup_lock(db):
+        if invite_entry is None:
+            _raise_invite_code_invalid()
+
+        existing_code_identity = _get_auth_identity(
+            db,
+            provider=AUTH_PROVIDER_INVITE_CODE,
+            provider_user_id=invite_provider_user_id,
+        )
+        if existing_code_identity is not None:
+            _raise_invite_code_already_claimed()
+
+        existing_login_identity = _get_auth_identity(
+            db,
+            provider=AUTH_PROVIDER_HOSTED_PASSWORD,
+            provider_user_id=login_handle,
+        )
+        if existing_login_identity is not None:
+            _raise_hosted_nickname_taken()
+
+        ensure_hosted_user_capacity(db)
+
+        for _attempt in range(5):
+            user = User(
+                username=_build_internal_username(resolved_nickname),
+                nickname=resolved_nickname,
+                hashed_password=hash_password(password),
+                generation_quota=settings.initial_quota,
+            )
+            db.add(user)
+            try:
+                db.flush()
+                db.add(
+                    AuthIdentity(
+                        user_id=user.id,
+                        provider=AUTH_PROVIDER_INVITE_CODE,
+                        provider_user_id=invite_provider_user_id,
+                        provider_login=invite_label,
+                        last_login_at=datetime.now(timezone.utc),
+                    )
+                )
+                db.add(
+                    AuthIdentity(
+                        user_id=user.id,
+                        provider=AUTH_PROVIDER_HOSTED_PASSWORD,
+                        provider_user_id=login_handle,
+                        provider_login=resolved_nickname,
+                        last_login_at=datetime.now(timezone.utc),
+                    )
+                )
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                if (
+                    _get_auth_identity(
+                        db,
+                        provider=AUTH_PROVIDER_INVITE_CODE,
+                        provider_user_id=invite_provider_user_id,
+                    )
+                    is not None
+                ):
+                    _raise_invite_code_already_claimed()
+                if (
+                    _get_auth_identity(
+                        db,
+                        provider=AUTH_PROVIDER_HOSTED_PASSWORD,
+                        provider_user_id=login_handle,
+                    )
+                    is not None
+                ):
+                    _raise_hosted_nickname_taken()
+                continue
+
+            db.refresh(user)
+            _finish_new_hosted_user_setup(db, user, signup_meta=signup_meta)
+            return user
+
+    raise RuntimeError(f"Failed to activate hosted user for invite code {normalized_invite_code!r}")
+
+
+def authenticate_hosted_user_by_nickname_password(
+    db: Session,
+    *,
+    nickname: str,
+    password: str,
+) -> User:
+    try:
+        login_handle = normalize_hosted_login_handle(nickname)
+    except ValueError:
+        _raise_invalid_hosted_login_credentials()
+
+    identity = _get_auth_identity(
+        db,
+        provider=AUTH_PROVIDER_HOSTED_PASSWORD,
+        provider_user_id=login_handle,
+    )
+    if identity is None or identity.user is None:
+        _raise_invalid_hosted_login_credentials()
+    if not verify_password(password, identity.user.hashed_password):
+        _raise_invalid_hosted_login_credentials()
+    return _touch_auth_identity(
+        db,
+        identity,
+        provider_login=identity.user.nickname,
     )
 
 
@@ -535,6 +570,30 @@ def get_current_user(
     user = db.query(User).filter(User.username == username).first()
     if user is None or not user.is_active:
         raise credentials_exc
+    return user
+
+
+def get_current_user_optional(
+    request: Request,
+    token: str | None = Depends(oauth2_scheme_optional),
+    db: Session = Depends(get_db),
+) -> User | None:
+    settings = get_settings()
+    resolved_token = _resolve_token(token, request)
+    if not resolved_token:
+        return None
+
+    try:
+        payload = jwt.decode(resolved_token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        username: str | None = payload.get("sub")
+        if username is None:
+            return None
+    except jwt.PyJWTError:
+        return None
+
+    user = db.query(User).filter(User.username == username).first()
+    if user is None or not user.is_active:
+        return None
     return user
 
 

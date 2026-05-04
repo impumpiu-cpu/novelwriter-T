@@ -10,6 +10,7 @@ export function EmptyWorldOnboarding({
   onDismiss,
   bootstrapPending,
   bootstrapError,
+  chaptersAvailable = true,
 }: {
   className?: string
   onGenerate: () => void
@@ -17,8 +18,13 @@ export function EmptyWorldOnboarding({
   onDismiss: () => void
   bootstrapPending?: boolean
   bootstrapError?: string | null
+  chaptersAvailable?: boolean
 }) {
   const { t } = useUiLocale()
+  const extractDisabled = bootstrapPending || !chaptersAvailable
+  const extractDescription = chaptersAvailable
+    ? t('worldModel.onboarding.extractDescription')
+    : t('worldModel.onboarding.extractUnavailable')
   return (
     <div className={cn('flex flex-1 items-center justify-center px-8 py-10', className)} data-testid="world-onboarding">
       <div className="w-full max-w-4xl space-y-6">
@@ -66,7 +72,7 @@ export function EmptyWorldOnboarding({
             <button
               type="button"
               onClick={onBootstrap}
-              disabled={bootstrapPending}
+              disabled={extractDisabled}
               data-testid="world-onboarding-bootstrap"
             >
               <div className="flex items-start gap-4">
@@ -76,7 +82,7 @@ export function EmptyWorldOnboarding({
                 <div className="flex-1 space-y-1">
                   <div className="text-base font-semibold text-foreground">{t('worldModel.onboarding.extractTitle')}</div>
                   <div className="text-sm text-muted-foreground">
-                    {t('worldModel.onboarding.extractDescription')}
+                    {extractDescription}
                   </div>
                   {bootstrapPending ? (
                     <div className="text-xs text-muted-foreground pt-1">{t('worldModel.common.processing')}</div>

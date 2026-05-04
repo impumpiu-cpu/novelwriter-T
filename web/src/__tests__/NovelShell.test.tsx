@@ -140,8 +140,8 @@ describe('NovelShell', () => {
           <MemoryRouter initialEntries={['/world/7?tab=entities']}>
             <Routes>
               <Route element={<NovelShell />}>
-                <Route path="/world/:novelId" element={<ShellProbe nextPath="/novel/7/chapter/3/results" />} />
-                <Route path="/novel/:novelId/chapter/:chapterNum/results" element={<ShellProbe />} />
+                <Route path="/world/:novelId" element={<ShellProbe nextPath="/novel/7?stage=results&chapter=3" />} />
+                <Route path="/novel/:novelId" element={<ShellProbe />} />
               </Route>
             </Routes>
           </MemoryRouter>
@@ -161,7 +161,7 @@ describe('NovelShell', () => {
 
     expect(screen.getByTestId('surface')).toHaveTextContent('studio')
     expect(screen.getByTestId('stage')).toHaveTextContent('results')
-    expect(screen.getByTestId('entry')).toHaveTextContent('results_compat')
+    expect(screen.getByTestId('entry')).toHaveTextContent('studio_host')
     expect(screen.getByTestId('session-count')).toHaveTextContent('1')
     expect(screen.getByTestId('drawer-state')).toHaveTextContent('open')
     expect(screen.getByTestId('drawer-width')).toHaveTextContent('640')
@@ -179,11 +179,11 @@ describe('NovelShell', () => {
               <Route element={<NovelShell />}>
                 <Route path="/world/:novelId" element={
                   <>
-                    <ShellProbe nextPath="/novel/7/chapter/3/results" />
+                    <ShellProbe nextPath="/novel/7?stage=results&chapter=3" />
                     <NovelCopilotDrawer novelId={7} />
                   </>
                 } />
-                <Route path="/novel/:novelId/chapter/:chapterNum/results" element={<ShellProbe />} />
+                <Route path="/novel/:novelId" element={<ShellProbe />} />
               </Route>
             </Routes>
           </MemoryRouter>

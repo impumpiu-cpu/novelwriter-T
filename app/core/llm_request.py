@@ -20,6 +20,10 @@ LLM_CONFIG_INCOMPLETE_CODE = "llm_config_incomplete"
 LLM_CONFIG_INCOMPLETE_MESSAGE = (
     "BYOK requires X-LLM-Base-Url, X-LLM-Api-Key, and X-LLM-Model together."
 )
+LLM_CONFIG_HOSTED_BYOK_DISABLED_CODE = "hosted_byok_disabled"
+LLM_CONFIG_HOSTED_BYOK_DISABLED_MESSAGE = (
+    "Hosted beta uses platform-managed AI credentials only."
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,13 @@ def build_incomplete_llm_config_detail() -> dict[str, str]:
     return {
         "code": LLM_CONFIG_INCOMPLETE_CODE,
         "message": LLM_CONFIG_INCOMPLETE_MESSAGE,
+    }
+
+
+def build_hosted_byok_disabled_detail() -> dict[str, str]:
+    return {
+        "code": LLM_CONFIG_HOSTED_BYOK_DISABLED_CODE,
+        "message": LLM_CONFIG_HOSTED_BYOK_DISABLED_MESSAGE,
     }
 
 
@@ -69,14 +80,8 @@ def get_llm_config(request: Request) -> dict[str, Any] | None:
         raise HTTPException(status_code=400, detail=build_incomplete_llm_config_detail())
 
     settings = get_settings()
-    if settings.deploy_mode == "hosted" and override.base_url:
-        from app.core.url_validator import UnsafeURLError, validate_llm_url
-
-        try:
-            validate_llm_url(override.base_url)
-        except UnsafeURLError as exc:
-            # Reject user-controlled endpoints that can be used for SSRF in hosted mode.
-            raise HTTPException(status_code=400, detail=str(exc))
+    if settings.deploy_mode == "hosted":
+        raise HTTPException(status_code=400, detail=build_hosted_byok_disabled_detail())
 
     billing_source_hint = "byok" if settings.deploy_mode == "hosted" else "selfhost"
     return {
@@ -98,5 +103,4 @@ def resolve_generation_billing_source(request: Request) -> str:
 
     if not override.is_complete():
         raise HTTPException(status_code=400, detail=build_incomplete_llm_config_detail())
-
-    return "byok"
+    raise HTTPException(status_code=400, detail=build_hosted_byok_disabled_detail())

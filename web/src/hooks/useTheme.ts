@@ -3,14 +3,14 @@ import { useState, useEffect } from 'react';
 type Theme = 'light' | 'dark';
 
 function readStoredTheme(): Theme {
-    if (typeof window === 'undefined') return 'dark';
+    if (typeof window === 'undefined') return 'light';
     try {
         const saved = localStorage.getItem('novwr_theme');
         if (saved === 'light' || saved === 'dark') return saved;
     } catch {
         // SecurityError (storage denied) or other — fall back silently
     }
-    return 'dark';
+    return 'light';
 }
 
 export function useTheme() {

@@ -4,6 +4,7 @@ export interface Novel {
   author: string
   language: string
   total_chapters: number
+  is_seeded_demo?: boolean
   window_index?: WindowIndexState
   created_at: string
   updated_at: string
@@ -11,12 +12,80 @@ export interface Novel {
 
 export type WindowIndexLifecycleStatus = 'missing' | 'stale' | 'fresh' | 'failed'
 export type DerivedAssetJobStatus = 'queued' | 'running' | 'completed' | 'failed'
+export type NovelIngestJobStatus = 'queued' | 'running' | 'completed' | 'failed'
+export type NovelIngestJobStage =
+  | 'accepted'
+  | 'decoding'
+  | 'parsing'
+  | 'persisting'
+  | 'planning'
+  | 'completed'
+  | 'failed'
+export type NovelIngestSizeTier = 'normal' | 'large' | 'xlarge' | 'reject'
+export type WindowIndexReadinessStatus = 'accepting' | 'processing' | 'ready' | 'degraded_ready' | 'failed_retryable'
+
+export interface WindowIndexJobMetrics {
+  queue_wait_ms: number | null
+  load_chapters_ms: number | null
+  build_artifacts_ms: number | null
+  serialize_ms: number | null
+  persist_ms: number | null
+  full_build_ms: number | null
+  chapter_count: number | null
+  chapter_chars: number | null
+  payload_bytes: number | null
+  rss_kib: number | null
+  peak_rss_kib: number | null
+  index_backend: string | null
+  executor_backend: string | null
+  target_count: number | null
+  segment_count: number | null
+  mention_posting_count: number | null
+  claim_atom_count: number | null
+  coverage_rep_count: number | null
+  discover_targets_ms: number | null
+  segmentation_ms: number | null
+  mention_ms: number | null
+  claim_ms: number | null
+  coverage_ms: number | null
+  plan_mode: string | null
+  incremental_applied: boolean | null
+  rebuilt_chapter_count: number | null
+  reused_chapter_count: number | null
+  fallback_reason: string | null
+}
 
 export interface WindowIndexJob {
   status: DerivedAssetJobStatus
   target_revision: number
   completed_revision: number | null
   error: string | null
+  created_at: string | null
+  started_at: string | null
+  finished_at: string | null
+  metrics: WindowIndexJobMetrics | null
+}
+
+export interface NovelIngestJob {
+  status: NovelIngestJobStatus
+  stage: NovelIngestJobStage
+  size_tier: NovelIngestSizeTier | null
+  source_bytes: number
+  source_chars: number | null
+  chapter_count: number | null
+  requested_language: string | null
+  resolved_language: string | null
+  auto_index_plan: string | null
+  bootstrap_plan: string | null
+  readiness_mode: string | null
+  error: string | null
+}
+
+export interface WindowIndexCapabilities {
+  chapters_available: boolean
+  whole_book_index_available: boolean
+  bootstrap_available: boolean
+  recent_fallback_only: boolean
 }
 
 export interface WindowIndexState {
@@ -24,6 +93,9 @@ export interface WindowIndexState {
   revision: number
   built_revision: number | null
   error: string | null
+  readiness?: WindowIndexReadinessStatus
+  capabilities?: WindowIndexCapabilities
+  ingest?: NovelIngestJob | null
   job: WindowIndexJob | null
 }
 
@@ -345,13 +417,6 @@ export interface WorldpackImportResponse {
 export interface QuotaResponse {
   generation_quota: number
   feedback_submitted: boolean
-}
-
-export interface UserPreferences {
-  num_versions?: number
-  temperature?: number
-  context_chapters?: number
-  target_chars?: number
 }
 
 export type StreamEvent =

@@ -1,5 +1,6 @@
 import { useMemo, useState, type KeyboardEvent } from 'react'
 import { ArrowLeft, Compass, Sparkles } from 'lucide-react'
+import { AssistToggleButton } from '@/components/studio/AssistToggleButton'
 import { useUiLocale } from '@/contexts/UiLocaleContext'
 import { RelationshipInspector } from '@/components/world-model/relationships/RelationshipInspector'
 import { NwButton } from '@/components/ui/nw-button'
@@ -17,13 +18,19 @@ export function StudioRelationshipStage({
   entityId,
   onReturnToArtifact,
   onOpenAtlas,
+  onWarmAtlas,
   onOpenCopilot,
+  assistOpen,
+  onToggleAssist,
 }: {
   novelId: number
   entityId: number | null
   onReturnToArtifact?: () => void
   onOpenAtlas: () => void
+  onWarmAtlas?: () => void
   onOpenCopilot: () => void
+  assistOpen?: boolean
+  onToggleAssist?: () => void
 }) {
   const { t } = useUiLocale()
   const { data: entities = [] } = useWorldEntities(novelId)
@@ -87,12 +94,15 @@ export function StudioRelationshipStage({
             </NwButton>
             <NwButton
               onClick={onOpenAtlas}
+              onMouseEnter={onWarmAtlas}
+              onFocus={onWarmAtlas}
               variant="accentOutline"
               className="rounded-[10px] px-4 py-2 text-sm font-medium"
             >
               <Compass size={14} />
               {t('studio.stage.openInAtlas')}
             </NwButton>
+            {onToggleAssist ? <AssistToggleButton active={assistOpen} onClick={onToggleAssist} /> : null}
           </div>
         </div>
       </div>

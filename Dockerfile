@@ -26,15 +26,28 @@ FROM python:3.13-slim AS backend-build
 COPY --from=uv-installer /uv-bin/ /usr/local/bin/
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates build-essential pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 ENV UV_PYTHON_CACHE_DIR=/root/.cache/uv/python
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 COPY .uv-version pyproject.toml uv.lock .python-version ./
-COPY scripts/setup_python_env.sh ./scripts/
+COPY scripts/setup_python_env.sh scripts/ensure_state_proto_extension.sh scripts/build_state_proto_rust.sh ./scripts/
+COPY rust/state_proto/ rust/state_proto/
+COPY app/core/indexing/data/ app/core/indexing/data/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    VENV_DIR=/app/.venv ./scripts/setup_python_env.sh --no-dev
+    VENV_DIR=/app/.venv ./scripts/setup_python_env.sh --no-dev --skip-state-proto
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/app/rust/state_proto/target \
+    VENV_DIR=/app/.venv ./scripts/build_state_proto_rust.sh
 
 COPY app/ app/
 COPY alembic/ alembic/

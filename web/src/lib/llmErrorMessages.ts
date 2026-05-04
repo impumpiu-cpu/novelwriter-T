@@ -1,3 +1,4 @@
+import '@/lib/uiMessagePacks/novel'
 import type { LlmConfig } from '@/lib/llmConfigStore'
 import { resolveCurrentUiLocale } from '@/lib/uiLocale'
 import { translateUiMessage, type UiLocale } from '@/lib/uiMessages'
@@ -23,6 +24,13 @@ export function getLlmApiErrorMessage(err: ApiError, locale?: UiLocale): string 
       return translateUiMessage(effectiveLocale, 'llm.error.budgetUnavailable')
     case 'world_generate_llm_unavailable':
       return translateUiMessage(effectiveLocale, 'llm.error.modelUnavailable')
+    case 'continuation_duplicate_request':
+    case 'continuation_request_still_running':
+      return translateUiMessage(effectiveLocale, 'continuation.results.alreadyRunning')
+    case 'world_generate_duplicate_request':
+      return translateUiMessage(effectiveLocale, 'worldModel.generate.conflict')
+    case 'bootstrap_index_already_fresh':
+      return translateUiMessage(effectiveLocale, 'worldModel.bootstrap.alreadyFresh')
     default:
       return null
   }

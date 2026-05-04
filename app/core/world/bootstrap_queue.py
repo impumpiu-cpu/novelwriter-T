@@ -1,0 +1,175 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import logging
+from typing import Callable
+
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.config import Settings, get_settings
+from app.core.world.bootstrap_state import is_bootstrap_initialized
+from app.models import BootstrapJob, Chapter, Novel, NovelIngestJob
+
+logger = logging.getLogger(__name__)
+
+_BOOTSTRAP_MODE_INITIAL = "initial"
+_BOOTSTRAP_RESULT_QUEUED_USER_ID_KEY = "_queued_user_id"
+_RUNNING_BOOTSTRAP_STATUSES = frozenset(
+    {
+        "pending",
+        "tokenizing",
+        "extracting",
+        "windowing",
+        "refining",
+    }
+)
+
+
+def _auto_bootstrap_llm_ready(settings: Settings) -> bool:
+    if bool(getattr(settings, "ai_manual_disable", False)):
+        return False
+
+    deploy_mode = str(getattr(settings, "deploy_mode", "") or "").strip().lower()
+    if deploy_mode == "hosted":
+        base_url = getattr(settings, "hosted_llm_base_url", None) or getattr(settings, "openai_base_url", None)
+        api_key = getattr(settings, "hosted_llm_api_key", None) or getattr(settings, "openai_api_key", None)
+        model = getattr(settings, "hosted_llm_model", None) or getattr(settings, "openai_model", None)
+    else:
+        base_url = getattr(settings, "openai_base_url", None)
+        api_key = getattr(settings, "openai_api_key", None)
+        model = getattr(settings, "openai_model", None)
+
+    return all(str(value or "").strip() for value in (base_url, api_key, model))
+
+
+def ensure_ingest_bootstrap_job(
+    novel_id: int,
+    *,
+    session_factory: Callable[[], Session],
+    settings: Settings | None = None,
+) -> BootstrapJob | None:
+    resolved_settings = settings or get_settings()
+    db = session_factory()
+    try:
+        novel = db.query(Novel).filter(Novel.id == novel_id).first()
+        if novel is None:
+            return None
+        ingest_job = db.query(NovelIngestJob).filter(NovelIngestJob.novel_id == novel_id).first()
+        if ingest_job is None or ingest_job.status != "completed":
+            return None
+
+        bootstrap_plan = (ingest_job.bootstrap_plan or "").strip()
+        if bootstrap_plan == "manual_only":
+            return None
+        if not _auto_bootstrap_llm_ready(resolved_settings):
+            logger.info(
+                "bootstrap: skipping auto-bootstrap because LLM config is unavailable novel=%d plan=%s",
+                novel_id,
+                bootstrap_plan or "unknown",
+            )
+            return None
+        if bootstrap_plan == "defer_until_index" and not is_window_index_ready(novel):
+            return None
+        if bootstrap_plan not in {"immediate", "defer_until_index"}:
+            return None
+        if not _has_non_empty_chapter_text(novel_id, db):
+            return None
+
+        job = db.query(BootstrapJob).filter(BootstrapJob.novel_id == novel_id).first()
+        if job and _is_running_status(job.status):
+            if _is_stale_running_job(
+                job,
+                stale_after_seconds=resolved_settings.bootstrap_stale_job_timeout_seconds,
+            ):
+                logger.warning(
+                    "Reclaiming stale auto bootstrap job",
+                    extra={"novel_id": novel_id, "job_id": job.id, "status": job.status},
+                )
+            else:
+                return None
+        if is_bootstrap_initialized(job):
+            return None
+
+        if not job:
+            job = BootstrapJob(novel_id=novel_id)
+            db.add(job)
+
+        job.mode = _BOOTSTRAP_MODE_INITIAL
+        job.draft_policy = None
+        job.status = "pending"
+        job.progress = {"step": 0, "detail": "queued"}
+        job.result = _build_bootstrap_trigger_result(user_id=getattr(novel, "owner_id", None))
+        job.error = None
+
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing_job = db.query(BootstrapJob).filter(BootstrapJob.novel_id == novel_id).first()
+            if existing_job and (
+                is_bootstrap_initialized(existing_job)
+                or _is_running_status(existing_job.status)
+            ):
+                return None
+            raise
+
+        db.refresh(job)
+        logger.info(
+            "bootstrap[%d]: auto-queued initial bootstrap novel=%d plan=%s",
+            job.id,
+            novel_id,
+            bootstrap_plan,
+        )
+        return job
+    finally:
+        db.close()
+
+
+def _build_bootstrap_trigger_result(*, user_id: int | None) -> dict[str, int | bool]:
+    result: dict[str, int | bool] = {
+        "entities_found": 0,
+        "relationships_found": 0,
+        "index_refresh_only": False,
+    }
+    if user_id is not None:
+        result[_BOOTSTRAP_RESULT_QUEUED_USER_ID_KEY] = int(user_id)
+    return result
+
+
+def _has_non_empty_chapter_text(novel_id: int, db: Session) -> bool:
+    chapters = db.query(Chapter.content).filter(Chapter.novel_id == novel_id).all()
+    return any((content or "").strip() for (content,) in chapters)
+
+
+def is_window_index_ready(novel: Novel) -> bool:
+    current_revision = int(getattr(novel, "window_index_revision", 0) or 0)
+    built_revision = int(getattr(novel, "window_index_built_revision", 0) or 0)
+    return (
+        current_revision > 0
+        and built_revision >= current_revision
+        and str(getattr(novel, "window_index_status", "") or "").strip().lower() == "fresh"
+    )
+
+
+def _is_running_status(status: str | None) -> bool:
+    return status in _RUNNING_BOOTSTRAP_STATUSES
+def _is_stale_running_job(
+    job: BootstrapJob,
+    *,
+    stale_after_seconds: int,
+    now: datetime | None = None,
+) -> bool:
+    if stale_after_seconds <= 0 or not _is_running_status(job.status):
+        return False
+
+    updated_at = job.updated_at or job.created_at
+    if updated_at is None:
+        return False
+    if updated_at.tzinfo is not None:
+        updated_at = updated_at.astimezone(timezone.utc).replace(tzinfo=None)
+
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is not None:
+        current_time = current_time.astimezone(timezone.utc).replace(tzinfo=None)
+    return (current_time - updated_at).total_seconds() >= stale_after_seconds

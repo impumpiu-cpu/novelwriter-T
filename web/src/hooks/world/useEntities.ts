@@ -17,6 +17,33 @@ function applyEntityPatch<T extends { name: string; entity_type: string; descrip
   return next
 }
 
+function listParamsFromKey(key: QueryKey): Record<string, unknown> | undefined {
+  const last = key[key.length - 1]
+  if (last && typeof last === 'object' && !Array.isArray(last)) {
+    return last as Record<string, unknown>
+  }
+  return undefined
+}
+
+function entityMatchesListParams(entity: WorldEntity, params: Record<string, unknown> | undefined): boolean {
+  if (!params) return true
+
+  const query = typeof params.q === 'string' ? params.q.trim().toLowerCase() : ''
+  if (query) {
+    const haystacks = [entity.name, entity.description, ...entity.aliases]
+      .map((value) => value.toLowerCase())
+    if (!haystacks.some((value) => value.includes(query))) return false
+  }
+
+  if (typeof params.entity_type === 'string' && entity.entity_type !== params.entity_type) return false
+  if (typeof params.status === 'string' && entity.status !== params.status) return false
+  if (typeof params.origin === 'string' && entity.origin !== params.origin) return false
+  if (typeof params.worldpack_pack_id === 'string' && entity.worldpack_pack_id !== params.worldpack_pack_id) return false
+  if (typeof params.worldpack_key === 'string' && entity.worldpack_key !== params.worldpack_key) return false
+
+  return true
+}
+
 export function useWorldEntities(novelId: number, params?: { entity_type?: string; status?: string }) {
   return useQuery({
     queryKey: [...worldKeys.entities(novelId), params],
@@ -37,7 +64,26 @@ export function useCreateEntity(novelId: number) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (data: CreateEntityRequest) => worldApi.createEntity(novelId, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: worldKeys.entities(novelId) }) },
+    onSuccess: (created) => {
+      qc.setQueryData<WorldEntityDetail>(worldKeys.entity(novelId, created.id), {
+        ...created,
+        attributes: [],
+      })
+
+      const previousEntityLists = qc.getQueriesData<WorldEntity[]>({
+        queryKey: worldKeys.entities(novelId),
+        predicate: (q) => Array.isArray(q.state.data),
+      })
+
+      previousEntityLists.forEach(([key, data]) => {
+        if (!Array.isArray(data)) return
+        if (!entityMatchesListParams(created, listParamsFromKey(key))) return
+        if (data.some((entity) => entity.id === created.id)) return
+        qc.setQueryData<WorldEntity[]>(key, [...data, created])
+      })
+
+      qc.invalidateQueries({ queryKey: worldKeys.entities(novelId) })
+    },
   })
 }
 

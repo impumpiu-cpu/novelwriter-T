@@ -94,9 +94,11 @@ test('entity CRUD: create → sidebar → detail → edit name → delete', asyn
   await page.getByTestId('tab-entities').click()
 
   // Create
+  const entityNavigator = page.getByTestId('entity-navigator')
   await page.getByTestId('entity-create').click()
-  // Newly created drafts are sorted to the top; pick the first "新实体" row.
-  const entityBtn = page.getByTestId('entity-navigator').getByRole('button', { name: /^新实体$/ }).first()
+  // Newly created drafts are sorted to the top. Assert on navigator behavior
+  // instead of locale-specific default copy so this survives zh/en UI changes.
+  const entityBtn = entityNavigator.locator('[data-testid^="entity-row-"]').first()
   await expect(entityBtn).toBeVisible({ timeout: 10000 })
 
   // Atlas sidebars now have richer bottom panels; keyboard activation is more
@@ -110,13 +112,13 @@ test('entity CRUD: create → sidebar → detail → edit name → delete', asyn
   await detail.getByTestId('inline-edit-display').first().click()
   await detail.getByTestId('inline-edit-input').first().fill('测试角色')
   await detail.getByTestId('inline-edit-input').first().press('Enter')
-  await expect(page.getByTestId('entity-navigator').getByRole('button', { name: /测试角色/ })).toBeVisible({ timeout: 10000 })
+  await expect(entityNavigator.getByRole('button', { name: /测试角色/ })).toBeVisible({ timeout: 10000 })
 
   // Delete via ··· menu
   await detail.getByRole('button', { name: '···' }).click()
   await page.getByTestId('entity-delete-menu').click()
   await page.getByTestId('confirm-ok').click()
-  await expect(page.getByTestId('entity-navigator').getByRole('button', { name: /测试角色/ })).not.toBeVisible()
+  await expect(entityNavigator.getByRole('button', { name: /测试角色/ })).not.toBeVisible()
 })
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ import {
   type NovelCopilotSession,
 } from '@/types/copilot'
 import { getDefaultCopilotSessionTitle } from '@/components/novel-copilot/novelCopilotHelpers'
+import { trackHostedAnalyticsEvent } from '@/lib/hostedAnalytics'
 import { copilotApi } from '@/services/api'
 
 export interface NovelCopilotSessionsOnlyState {
@@ -169,6 +170,14 @@ export function useNovelCopilotSessionsState({
       }
       setFocusedSessionId(existing.sessionId)
       setIsOpen(true)
+      void trackHostedAnalyticsEvent('copilot_open', {
+        novelId,
+        meta: {
+          mode: existing.prefill.mode,
+          scope: existing.prefill.scope,
+          surface: existing.prefill.context?.surface ?? 'unknown',
+        },
+      })
       prefetchBackendSession(existing.sessionId)
       return existing.sessionId
     }
@@ -187,6 +196,14 @@ export function useNovelCopilotSessionsState({
     commitSessions([...currentSessions, nextSession])
     setFocusedSessionId(localId)
     setIsOpen(true)
+    void trackHostedAnalyticsEvent('copilot_open', {
+      novelId,
+      meta: {
+        mode: nextSession.prefill.mode,
+        scope: nextSession.prefill.scope,
+        surface: nextSession.prefill.context?.surface ?? 'unknown',
+      },
+    })
     prefetchBackendSession(localId)
     return localId
   }, [commitSessions, novelId, normalizedInteractionLocale, prefetchBackendSession])

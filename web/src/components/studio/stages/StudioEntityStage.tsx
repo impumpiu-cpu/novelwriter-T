@@ -1,4 +1,5 @@
 import { ArrowLeft, Compass, Sparkles } from 'lucide-react'
+import { AssistToggleButton } from '@/components/studio/AssistToggleButton'
 import { useUiLocale } from '@/contexts/UiLocaleContext'
 import { EntityDetail } from '@/components/world-model/entities/EntityDetail'
 import { NwButton } from '@/components/ui/nw-button'
@@ -8,13 +9,19 @@ export function StudioEntityStage({
   entityId,
   onReturnToArtifact,
   onOpenAtlas,
+  onWarmAtlas,
   onOpenCopilot,
+  assistOpen,
+  onToggleAssist,
 }: {
   novelId: number
   entityId: number | null
   onReturnToArtifact?: () => void
   onOpenAtlas: () => void
+  onWarmAtlas?: () => void
   onOpenCopilot: () => void
+  assistOpen?: boolean
+  onToggleAssist?: () => void
 }) {
   const { t } = useUiLocale()
 
@@ -55,12 +62,15 @@ export function StudioEntityStage({
             </NwButton>
             <NwButton
               onClick={onOpenAtlas}
+              onMouseEnter={onWarmAtlas}
+              onFocus={onWarmAtlas}
               variant="accentOutline"
               className="rounded-[10px] px-4 py-2 text-sm font-medium"
             >
               <Compass size={14} />
               {t('studio.stage.openInAtlas')}
             </NwButton>
+            {onToggleAssist ? <AssistToggleButton active={assistOpen} onClick={onToggleAssist} /> : null}
           </div>
         </div>
       </div>

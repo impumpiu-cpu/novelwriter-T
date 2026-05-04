@@ -4,13 +4,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import app.core.seed_demo as seed_demo_module
-from app.config import get_settings
 from app.core.auth import hash_password
 from app.core.indexing import NovelIndex
 from app.core.seed_demo import (
     DEMO_TITLE,
     DEMO_TXT,
-    load_demo_window_index_artifact,
+    is_seeded_demo_file_path,
+    is_seeded_demo_novel,
     seed_demo_novel,
 )
 from app.database import Base
@@ -61,39 +61,37 @@ def _make_novel_with_chapters(
     return novel
 
 
-def test_packaged_demo_window_index_artifact_matches_current_inputs():
-    artifact = load_demo_window_index_artifact()
-
-    artifact.validate(settings=get_settings(), source_txt_path=DEMO_TXT)
-    assert artifact.chapter_count == 27
-    assert artifact.entity_windows
-    assert artifact.window_entities
-
-
-def test_seed_creates_novel_worldpack_and_packaged_index_without_runtime_rebuild(
-    monkeypatch,
-):
+def test_seed_creates_novel_worldpack_and_state_proto_index(monkeypatch):
     db = _fresh_db()
     user = _make_user(db)
     _make_novel_with_chapters(db, user, title="primer", chapter_count=5)
 
-    def _unexpected_runtime_build(*args, **kwargs):
-        raise AssertionError(
-            "seed_demo_novel should not rebuild the packaged window index at runtime"
+    original_execute = seed_demo_module.execute_state_proto_build
+    seen_target_specs: list[tuple[tuple[str, str], ...]] = []
+
+    def _execute_state_proto_build(**kwargs):
+        target_specs = tuple(kwargs.get("target_specs") or ())
+        seen_target_specs.append(
+            tuple((spec.id, spec.canonical_name) for spec in target_specs)
         )
+        return original_execute(**kwargs)
 
     monkeypatch.setattr(
         seed_demo_module,
-        "build_window_index_artifacts",
-        _unexpected_runtime_build,
+        "execute_state_proto_build",
+        _execute_state_proto_build,
     )
 
     novel_id = seed_demo_novel(db, user)
 
     assert novel_id is not None
+    assert len(seen_target_specs) == 1
+    assert any(spec_id.startswith("entity:") for spec_id, _ in seen_target_specs[0])
+
     novel = db.query(Novel).filter(Novel.id == novel_id).one()
     assert novel.title == DEMO_TITLE
     assert novel.owner_id == user.id
+    assert is_seeded_demo_novel(novel) is True
 
     chapters = db.query(Chapter).filter(Chapter.novel_id == novel_id).all()
     assert len(chapters) == 27
@@ -135,12 +133,8 @@ def test_seed_is_idempotent():
     assert first_id is not None
     assert second_id is None
 
-    count = (
-        db.query(Novel)
-        .filter(Novel.owner_id == user.id, Novel.title == DEMO_TITLE)
-        .count()
-    )
-    assert count == 1
+    novels = db.query(Novel).filter(Novel.owner_id == user.id).all()
+    assert sum(1 for novel in novels if is_seeded_demo_novel(novel)) == 1
     db.close()
 
 
@@ -156,3 +150,23 @@ def test_seed_does_not_affect_other_users():
     assert id_b is not None
     assert id_a != id_b
     db.close()
+
+
+def test_seeded_demo_identity_uses_demo_asset_path_not_title():
+    db = _fresh_db()
+    user = _make_user(db, "seed_title_collision")
+
+    _make_novel_with_chapters(db, user, title=DEMO_TITLE, chapter_count=1)
+
+    novel_id = seed_demo_novel(db, user)
+
+    assert novel_id is not None
+    novels = db.query(Novel).filter(Novel.owner_id == user.id).all()
+    assert len(novels) == 2
+    assert sum(1 for novel in novels if is_seeded_demo_novel(novel)) == 1
+    db.close()
+
+
+def test_seeded_demo_file_path_detection_only_matches_demo_assets():
+    assert is_seeded_demo_file_path(str(DEMO_TXT)) is True
+    assert is_seeded_demo_file_path("/tmp/西游记.txt") is False

@@ -1,5 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import importlib.util
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -80,14 +82,12 @@ def novel_with_text(db):
 def test_window_bootstrap_config_defaults():
     model_fields = Settings.model_fields
 
-    assert model_fields["bootstrap_window_size"].default == 500
-    assert model_fields["bootstrap_window_step"].default == 250
-    assert model_fields["bootstrap_min_window_count"].default == 3
-    assert model_fields["bootstrap_min_window_ratio"].default == 0.005
     assert model_fields["bootstrap_llm_temperature"].default == 0.3
+    assert model_fields["bootstrap_llm_timeout_seconds"].default == 120
     assert model_fields["bootstrap_max_candidates"].default == 500
     assert model_fields["bootstrap_common_words_dir"].default == "data/common_words"
     assert model_fields["bootstrap_stale_job_timeout_seconds"].default == 900
+    assert model_fields["max_background_concurrent_llm_calls"].default == 1
 
 
 def test_bootstrap_job_status_transitions():
@@ -103,7 +103,13 @@ def test_bootstrap_job_status_transitions():
 
     assert job.status == "completed"
     assert job.progress == {"step": 5, "detail": "completed phase"}
-    assert job.result == {"entities_found": 0, "relationships_found": 0, "index_refresh_only": False}
+    assert job.result == {
+        "entities_found": 0,
+        "relationships_found": 0,
+        "index_refresh_only": False,
+        "llm_blocking_wait_seconds": 0.0,
+        "llm_blocking_wait_count": 0,
+    }
     assert job.error is None
 
 
@@ -135,12 +141,13 @@ def test_bootstrap_endpoint_request_contract():
         BootstrapTriggerRequest.model_validate({"unexpected": True})
 
 
-def test_bootstrap_serializer_handles_legacy_missing_mode_and_result(world_api):
+def test_bootstrap_serializer_treats_initialized_column_as_single_truth(world_api):
     now = datetime.now(timezone.utc)
     legacy_job = BootstrapJob(
         id=99,
         novel_id=1,
         status="completed",
+        initialized=False,
         progress=None,
         result=None,
         created_at=now,
@@ -150,11 +157,60 @@ def test_bootstrap_serializer_handles_legacy_missing_mode_and_result(world_api):
 
     response = world_api._serialize_bootstrap_job(legacy_job)
     assert response.mode == "index_refresh"
-    assert response.initialized is True
+    assert response.initialized is False
     assert response.progress.step == 0
     assert response.result.entities_found == 0
     assert response.result.relationships_found == 0
     assert response.result.index_refresh_only is False
+
+
+def test_bootstrap_initialized_backfill_migration_upgrades_legacy_completed_rows(db):
+    migration_path = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "037_backfill_bootstrap_initialized_column.py"
+    spec = importlib.util.spec_from_file_location("bootstrap_initialized_backfill_037", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    legacy_completed_job = BootstrapJob(
+        novel_id=1,
+        mode="initial",
+        initialized=False,
+        status="completed",
+        progress={"step": 5, "detail": "completed"},
+        result={"entities_found": 2, "relationships_found": 1, "index_refresh_only": False},
+    )
+    refresh_only_job = BootstrapJob(
+        novel_id=2,
+        mode="index_refresh",
+        initialized=False,
+        status="completed",
+        progress={"step": 5, "detail": "completed"},
+        result={"entities_found": 0, "relationships_found": 0, "index_refresh_only": True},
+    )
+    db.add_all([legacy_completed_job, refresh_only_job])
+    db.commit()
+
+    class _FakeOp:
+        @staticmethod
+        def get_bind():
+            return db.bind
+
+        @staticmethod
+        def execute(statement):
+            db.execute(statement)
+
+    original_op = migration.op
+    migration.op = _FakeOp()
+    try:
+        migration.upgrade()
+        db.commit()
+    finally:
+        migration.op = original_op
+
+    db.refresh(legacy_completed_job)
+    db.refresh(refresh_only_job)
+
+    assert legacy_completed_job.initialized is True
+    assert refresh_only_job.initialized is False
 
 
 @pytest.mark.asyncio

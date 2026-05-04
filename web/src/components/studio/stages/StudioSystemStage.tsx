@@ -1,5 +1,6 @@
 import { type KeyboardEvent } from 'react'
 import { ArrowLeft, Compass } from 'lucide-react'
+import { AssistToggleButton } from '@/components/studio/AssistToggleButton'
 import { LABELS } from '@/constants/labels'
 import { useUiLocale } from '@/contexts/UiLocaleContext'
 import { InlineEdit } from '@/components/world-model/shared/InlineEdit'
@@ -41,13 +42,19 @@ export function StudioSystemStage({
   systemId,
   onSelectSystem,
   onOpenAtlas,
+  onWarmAtlas,
   onReturnToArtifact,
+  assistOpen,
+  onToggleAssist,
 }: {
   novelId: number
   systemId: number | null
   onSelectSystem: (systemId: number) => void
   onOpenAtlas: () => void
+  onWarmAtlas?: () => void
   onReturnToArtifact?: () => void
+  assistOpen?: boolean
+  onToggleAssist?: () => void
 }) {
   const { t } = useUiLocale()
   const { data: systems = [] } = useWorldSystems(novelId)
@@ -84,12 +91,15 @@ export function StudioSystemStage({
             ) : null}
             <NwButton
               onClick={onOpenAtlas}
+              onMouseEnter={onWarmAtlas}
+              onFocus={onWarmAtlas}
               variant="accentOutline"
               className="rounded-[10px] px-4 py-2 text-sm font-medium"
             >
               <Compass size={14} />
               {t('studio.stage.openInAtlas')}
             </NwButton>
+            {onToggleAssist ? <AssistToggleButton active={assistOpen} onClick={onToggleAssist} /> : null}
           </div>
         </div>
       </div>

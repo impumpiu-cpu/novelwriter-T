@@ -4,7 +4,7 @@ Contract tests for deploy_mode (selfhost/hosted) + BYOK (LLM headers) security.
 These are intentionally small, high-signal tests covering:
 - /api/auth/me behavior by deploy_mode
 - hosted owner_id isolation for novels
-- hosted SSRF rejection for user-supplied LLM base_url headers
+- hosted rejection of user-supplied LLM base_url headers
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -76,11 +76,13 @@ class TestAuthMeDeployMode:
 
 class TestHostedOwnerIsolation:
     def test_list_and_get_are_filtered_by_owner_id_in_hosted_mode(self, db, monkeypatch):
-        from app.api import novels as novels_api
+        from app.api import novel_support, novels as novels_api
         from app.core.auth import get_current_user_or_default
 
         # hosted mode: strict owner_id isolation
-        monkeypatch.setattr(novels_api, "get_settings", lambda: MagicMock(deploy_mode="hosted"))
+        monkeypatch.setattr(
+            novel_support, "get_settings", lambda: MagicMock(deploy_mode="hosted")
+        )
 
         user1 = User(id=1, username="u1", hashed_password="x", role="admin", is_active=True)
         user2 = User(id=2, username="u2", hashed_password="x", role="user", is_active=True)
@@ -111,10 +113,12 @@ class TestSelfhostOwnerBehavior:
     def test_selfhost_list_and_get_ignore_owner_id(self, db, monkeypatch):
         from datetime import datetime, timezone
 
-        from app.api import novels as novels_api
+        from app.api import novel_support, novels as novels_api
         from app.core.auth import get_current_user_or_default
 
-        monkeypatch.setattr(novels_api, "get_settings", lambda: MagicMock(deploy_mode="selfhost"))
+        monkeypatch.setattr(
+            novel_support, "get_settings", lambda: MagicMock(deploy_mode="selfhost")
+        )
 
         user = User(id=111, username="default", hashed_password="x", role="admin", is_active=True)
         other = User(id=1, username="u1", hashed_password="x", role="user", is_active=True)
@@ -156,15 +160,13 @@ class TestSelfhostOwnerBehavior:
             assert resp2.status_code == 200
 
 
-class TestHostedSSRFRejection:
-    def test_hosted_rejects_http_and_link_local_base_url(self, db, monkeypatch):
+class TestHostedByokRejection:
+    def test_hosted_rejects_all_byok_headers(self, db, monkeypatch):
         from app.api import llm as llm_api
         from app.core.auth import get_current_user_or_default
         import app.core.llm_request as llm_request
-        import app.core.url_validator as url_validator
 
         monkeypatch.setattr(llm_request, "get_settings", lambda: MagicMock(deploy_mode="hosted"))
-        monkeypatch.setattr(url_validator, "get_settings", lambda: MagicMock(deploy_mode="hosted"))
 
         app = _make_app(db, llm_api.router)
         app.dependency_overrides[get_current_user_or_default] = lambda: User(
@@ -179,18 +181,18 @@ class TestHostedSSRFRejection:
         with TestClient(app) as c:
             resp = c.post("/api/llm/test", headers={**headers, "x-llm-base-url": "http://localhost:8000"})
             assert resp.status_code == 400
+            assert resp.json()["detail"]["code"] == "hosted_byok_disabled"
 
             resp2 = c.post("/api/llm/test", headers={**headers, "x-llm-base-url": "https://169.254.169.254/v1"})
             assert resp2.status_code == 400
+            assert resp2.json()["detail"]["code"] == "hosted_byok_disabled"
 
     def test_selfhost_allows_http_base_url(self, db, monkeypatch):
         from app.api import llm as llm_api
         from app.core.auth import get_current_user_or_default
         import app.core.llm_request as llm_request
-        import app.core.url_validator as url_validator
 
         monkeypatch.setattr(llm_request, "get_settings", lambda: MagicMock(deploy_mode="selfhost"))
-        monkeypatch.setattr(url_validator, "get_settings", lambda: MagicMock(deploy_mode="selfhost"))
 
         response = MagicMock(usage=None)
         mock_client = MagicMock()
@@ -411,11 +413,10 @@ class TestHostedSSRFRejection:
         assert payload["ok"] is True
         assert payload["capabilities"] == {"basic": True, "stream": True, "json_mode": True}
 
-    def test_hosted_llm_test_allows_byok_when_hosted_budget_hard_stop_is_reached(
+    def test_hosted_llm_test_rejects_byok_when_hosted_budget_hard_stop_is_reached(
         self,
         db,
         monkeypatch,
-        allow_public_llm_url_resolution,
     ):
         from app.api import llm as llm_api
         from app.config import Settings
@@ -425,7 +426,6 @@ class TestHostedSSRFRejection:
         prev = config_mod._settings_instance
         config_mod._settings_instance = Settings(deploy_mode="hosted", ai_hard_stop_usd=1.0, _env_file=None)
         try:
-            allow_public_llm_url_resolution()
             db.add(
                 TokenUsage(
                     user_id=1,
@@ -471,8 +471,8 @@ class TestHostedSSRFRejection:
             with TestClient(app) as c:
                 resp = c.post("/api/llm/test", headers=headers)
 
-            assert resp.status_code == 200
-            assert resp.json()["ok"] is True
+            assert resp.status_code == 400
+            assert resp.json()["detail"]["code"] == "hosted_byok_disabled"
         finally:
             config_mod._settings_instance = prev
 
@@ -480,10 +480,8 @@ class TestHostedSSRFRejection:
         from app.api import llm as llm_api
         from app.core.auth import get_current_user_or_default
         import app.core.llm_request as llm_request
-        import app.core.url_validator as url_validator
 
         monkeypatch.setattr(llm_request, "get_settings", lambda: MagicMock(deploy_mode="selfhost"))
-        monkeypatch.setattr(url_validator, "get_settings", lambda: MagicMock(deploy_mode="selfhost"))
         monkeypatch.setattr(llm_api, "AsyncOpenAI", lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not call provider")))
 
         app = _make_app(db, llm_api.router)
@@ -506,7 +504,6 @@ class TestHostedSSRFRejection:
     def test_llm_test_rejects_when_ai_is_manually_disabled(
         self,
         db,
-        allow_public_llm_url_resolution,
     ):
         from app.api import llm as llm_api
         from app.config import Settings
@@ -514,23 +511,23 @@ class TestHostedSSRFRejection:
         import app.config as config_mod
 
         prev = config_mod._settings_instance
-        config_mod._settings_instance = Settings(deploy_mode="hosted", ai_manual_disable=True, _env_file=None)
+        config_mod._settings_instance = Settings(
+            deploy_mode="hosted",
+            ai_manual_disable=True,
+            hosted_llm_base_url="https://example.com/v1",
+            hosted_llm_api_key="hosted-key",
+            hosted_llm_model="gemini-3.0-flash",
+            _env_file=None,
+        )
         try:
-            allow_public_llm_url_resolution()
             app = _make_app(db, llm_api.router)
             app.dependency_overrides[get_current_user_or_default] = lambda: User(
                 id=1, username="u", hashed_password="x", role="admin", is_active=True
             )
             llm_api.AsyncOpenAI = lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not call provider"))
 
-            headers = {
-                "x-llm-base-url": "https://example.com/v1",
-                "x-llm-api-key": "k",
-                "x-llm-model": "m",
-            }
-
             with TestClient(app) as c:
-                resp = c.post("/api/llm/test", headers=headers)
+                resp = c.post("/api/llm/test")
 
             assert resp.status_code == 503
             assert resp.json()["detail"]["code"] == "ai_manually_disabled"

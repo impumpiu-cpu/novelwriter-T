@@ -89,7 +89,6 @@ const COPILOT_APPLY_TYPES = [
   'create_system',
   'update_system',
 ] as const
-const LEGACY_ATLAS_STAGE_TABS = ['entities', 'relationships', 'systems'] as const
 
 function parseCopilotContextData(value: unknown): CopilotContextData | null {
   if (value == null) return null
@@ -99,18 +98,11 @@ function parseCopilotContextData(value: unknown): CopilotContextData | null {
     ? undefined
     : expectEnumValue(body.surface, COPILOT_CONTEXT_SURFACES, 'copilot context.surface')
   const rawStage = readOptionalString(body.stage)
-  const legacyAtlasStageTab = LEGACY_ATLAS_STAGE_TABS.includes(rawStage as (typeof LEGACY_ATLAS_STAGE_TABS)[number])
-    ? rawStage as (typeof LEGACY_ATLAS_STAGE_TABS)[number]
-    : undefined
-  const atlasReviewTab = surface === 'atlas' && rawStage === 'review' ? 'review' : undefined
-  const inferredTab = legacyAtlasStageTab ?? atlasReviewTab
-  if (surface === 'atlas' && rawStage != null && inferredTab == null) {
-    invalidResponseShape('copilot context.stage')
-  }
   const tab = body.tab == null
-    ? inferredTab
+    ? undefined
     : expectEnumValue(body.tab, COPILOT_CONTEXT_TABS, 'copilot context.tab')
-  const stage = rawStage == null || surface === 'atlas' || legacyAtlasStageTab != null || atlasReviewTab != null
+  if (surface === 'atlas' && tab == null) invalidResponseShape('copilot context.tab')
+  const stage = rawStage == null || surface === 'atlas'
     ? undefined
     : expectEnumValue(rawStage, COPILOT_CONTEXT_STAGES, 'copilot context.stage')
   return {

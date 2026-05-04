@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, ChevronRight } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import '@/lib/uiMessagePacks/novel'
@@ -6,13 +6,15 @@ import { useBootstrapStatus, useTriggerBootstrap } from '@/hooks/world/useBootst
 import { useNovelWindowIndex } from '@/hooks/novel/useNovelWindowIndex'
 import { worldKeys } from '@/hooks/world/keys'
 import { useToast } from '@/components/world-model/shared/useToast'
+import { isBootstrapInitialized, isBootstrapStatusRunning } from '@/lib/bootstrapStatus'
+import { trackHostedAnalyticsEvent } from '@/lib/hostedAnalytics'
 import { getLlmApiErrorMessage } from '@/lib/llmErrorMessages'
 import { getWindowIndexBootstrapStatusMeta } from '@/lib/windowIndexStatus'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useUiLocale } from '@/contexts/UiLocaleContext'
 import { ApiError } from '@/services/api'
-import type { BootstrapStatus, BootstrapTriggerRequest } from '@/types/api'
+import type { BootstrapJobResponse, BootstrapStatus, BootstrapTriggerRequest } from '@/types/api'
 
 const TOTAL_STEPS = 5
 
@@ -24,44 +26,72 @@ const REEXTRACT_PAYLOAD: BootstrapTriggerRequest = {
   force: true,
 }
 
-function isRunning(status: BootstrapStatus): boolean {
-  return ['pending', 'tokenizing', 'extracting', 'windowing', 'refining'].includes(status)
-}
-
-function isTerminal(status: BootstrapStatus): boolean {
-  return status === 'completed' || status === 'failed'
-}
-
 type BootstrapPanelVariant = 'sidebar' | 'page'
 
-export function BootstrapPanel({ novelId, variant = 'sidebar' }: { novelId: number; variant?: BootstrapPanelVariant }) {
+export type BootstrapLifecycleState =
+  | {
+      phase: 'idle'
+    }
+  | {
+      phase: 'running'
+      detail: string
+    }
+  | {
+      phase: 'failed'
+      detail: string
+    }
+  | {
+      phase: 'completed'
+      summary: string
+      requiresReview: boolean
+      entityCount: number
+      relationshipCount: number
+    }
+
+function bootstrapResultRequiresReview(job: BootstrapJobResponse): boolean {
+  if (job.result.index_refresh_only) return false
+  return job.result.entities_found > 0 || job.result.relationships_found > 0
+}
+
+export function BootstrapPanel({
+  novelId,
+  variant = 'sidebar',
+  analyticsSource = 'unknown',
+  onLifecycleChange,
+  onTriggerStart,
+  onTriggerError,
+  onJobAccepted,
+}: {
+  novelId: number
+  variant?: BootstrapPanelVariant
+  analyticsSource?: string
+  onLifecycleChange?: (state: BootstrapLifecycleState) => void
+  onTriggerStart?: (startedAtMs: number) => void
+  onTriggerError?: () => void
+  onJobAccepted?: (job: BootstrapJobResponse, startedAtMs: number) => void
+}) {
   const { locale, t } = useUiLocale()
-  const { data: job, isLoading } = useBootstrapStatus(novelId)
   const { data: indexState } = useNovelWindowIndex(novelId)
+  const { data: job, isLoading } = useBootstrapStatus(novelId, {
+    refetchWhenMissing: indexState?.ingest?.bootstrap_plan != null,
+  })
   const trigger = useTriggerBootstrap(novelId)
   const { toast } = useToast()
   const qc = useQueryClient()
   const previousStatusRef = useRef<BootstrapStatus | null>(null)
   const [reextractConfirmOpen, setReextractConfirmOpen] = useState(false)
-  const initializedFallback = Boolean(
-    job && (
-      job.mode === 'initial' ||
-      job.mode === 'reextract' ||
-      (job.status === 'completed' && !job.result.index_refresh_only)
-    )
-  )
-  const isInitialized = Boolean(job?.initialized ?? initializedFallback)
+  const isInitialized = isBootstrapInitialized(job)
   const indexStatusMeta = getWindowIndexBootstrapStatusMeta(indexState, locale)
   const indexStatusClassName = indexStatusMeta.tone === 'warning'
     ? 'text-[hsl(var(--color-warning))]'
     : 'text-muted-foreground/75'
-  const stepLabels: Record<string, string> = {
+  const stepLabels = useMemo<Record<string, string>>(() => ({
     pending: t('worldModel.bootstrap.step.pending'),
     tokenizing: t('worldModel.bootstrap.step.tokenizing'),
     extracting: t('worldModel.bootstrap.step.extracting'),
     windowing: t('worldModel.bootstrap.step.windowing'),
     refining: t('worldModel.bootstrap.step.refining'),
-  }
+  }), [t])
 
   const renderRowCopy = (options?: { summary?: string | null }) => (
     <span className="flex flex-1 flex-col text-left">
@@ -78,16 +108,82 @@ export function BootstrapPanel({ novelId, variant = 'sidebar' }: { novelId: numb
     const currentStatus = job?.status ?? null
     previousStatusRef.current = currentStatus
 
-    if (!currentStatus || !isTerminal(currentStatus)) return
-    if (previousStatus && isTerminal(previousStatus)) return
+    if (isLoading) return
+
+    if (!job) {
+      if (onLifecycleChange && previousStatus && isBootstrapStatusRunning(previousStatus)) {
+        onLifecycleChange({ phase: 'idle' })
+      }
+      return
+    }
+
+    if (isBootstrapStatusRunning(job.status)) {
+      if (onLifecycleChange) {
+        onLifecycleChange({
+          phase: 'running',
+          detail: stepLabels[job.status] ?? job.progress.detail,
+        })
+      }
+      return
+    }
+
+    if (!previousStatus || !isBootstrapStatusRunning(previousStatus)) return
 
     qc.invalidateQueries({ queryKey: worldKeys.entities(novelId) })
     qc.invalidateQueries({ queryKey: worldKeys.relationships(novelId) })
-  }, [job?.status, novelId, qc])
+
+    if (!onLifecycleChange) return
+
+    if (job.status === 'failed') {
+      onLifecycleChange({
+        phase: 'failed',
+        detail: job.error ?? t('worldModel.bootstrap.failed'),
+      })
+      return
+    }
+
+    if (job.status === 'completed') {
+      const requiresReview = bootstrapResultRequiresReview(job)
+      onLifecycleChange({
+        phase: 'completed',
+        summary: job.result.index_refresh_only
+          ? t('worldModel.bootstrap.completedIndexRefresh')
+          : t('worldModel.bootstrap.summaryCounts', {
+            entities: job.result.entities_found,
+            relationships: job.result.relationships_found,
+          }),
+        requiresReview,
+        entityCount: job.result.entities_found,
+        relationshipCount: job.result.relationships_found,
+      })
+    }
+  }, [isLoading, job, novelId, onLifecycleChange, qc, stepLabels, t])
 
   const handleTrigger = (payload: BootstrapTriggerRequest) => {
-    trigger.mutate(payload, {
-      onError: (err) => {
+    const startedAtMs = Date.now()
+    onTriggerStart?.(startedAtMs)
+    void trackHostedAnalyticsEvent('bootstrap_trigger', {
+      novelId,
+      meta: {
+        mode: payload.mode ?? (isInitialized ? 'index_refresh' : 'initial'),
+        source_surface: analyticsSource,
+      },
+    })
+    void trigger.mutateAsync(payload)
+      .then((job) => {
+        onJobAccepted?.(job, startedAtMs)
+      })
+      .catch((err) => {
+        onTriggerError?.()
+        void trackHostedAnalyticsEvent('bootstrap_failed', {
+          novelId,
+          meta: {
+            mode: payload.mode ?? (isInitialized ? 'index_refresh' : 'initial'),
+            source_surface: analyticsSource,
+            status: err instanceof ApiError ? err.status : null,
+            error_code: err instanceof ApiError ? err.code ?? null : 'bootstrap_failed',
+          },
+        })
         if (err instanceof ApiError) {
           const llmMessage = getLlmApiErrorMessage(err, locale)
           if (llmMessage) {
@@ -104,8 +200,7 @@ export function BootstrapPanel({ novelId, variant = 'sidebar' }: { novelId: numb
         } else {
           toast(t('worldModel.bootstrap.triggerFailed'))
         }
-      },
-    })
+      })
   }
 
   const handleInitialExtraction = () => {
@@ -145,7 +240,7 @@ export function BootstrapPanel({ novelId, variant = 'sidebar' }: { novelId: numb
     }
 
     // Running
-    if (job && isRunning(job.status)) {
+    if (job && isBootstrapStatusRunning(job.status)) {
       const progress = job.progress.step / TOTAL_STEPS
       const stepLabel = stepLabels[job.status] ?? job.progress.detail
       return (
@@ -262,7 +357,7 @@ export function BootstrapPanel({ novelId, variant = 'sidebar' }: { novelId: numb
     )
   }
 
-  if (job && isRunning(job.status)) {
+  if (job && isBootstrapStatusRunning(job.status)) {
     const progress = job.progress.step / TOTAL_STEPS
     const stepLabel = stepLabels[job.status] ?? job.progress.detail
     return (

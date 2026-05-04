@@ -465,6 +465,42 @@ describe('NovelCopilotDrawer', () => {
     expect(await screen.findByText('这条建议对应的内容刚刚发生了变化，请刷新后再试一次。')).toBeTruthy()
   })
 
+  it('locks the apply action while a suggestion is being applied', async () => {
+    const user = userEvent.setup()
+    const applyRequest = deferred<{ results: { suggestion_id: string; success: boolean }[] }>()
+    mockApplySuggestions.mockReturnValueOnce(applyRequest.promise)
+
+    render(createElement(DrawerHarness))
+
+    await user.click(screen.getByRole('button', { name: 'open-current-entity' }))
+    await user.type(
+      screen.getByPlaceholderText('输入补充要求，例如“优先补足苏瑶与宗门的关联线索”'),
+      '补完苏瑶的设定锚点{enter}',
+    )
+    await screen.findByText('补完 苏瑶 的设定锚点', {}, { timeout: 3000 })
+
+    const suggestionCard = screen.getByTestId('copilot-suggestion-sg_test_primary')
+    const applyButton = within(suggestionCard).getByRole('button', { name: /采纳/ })
+
+    await user.click(applyButton)
+
+    expect(mockApplySuggestions).toHaveBeenCalledTimes(1)
+    expect(within(suggestionCard).getByRole('button', { name: '采纳中' })).toBeDisabled()
+
+    await user.click(within(suggestionCard).getByRole('button', { name: '采纳中' }))
+    expect(mockApplySuggestions).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      applyRequest.resolve({
+        results: [{ suggestion_id: 'sg_test_primary', success: true }],
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getAllByText('已采纳').length).toBeGreaterThan(0)
+    })
+  })
+
   it('sanitizes legacy tool-trace and evidence-pack wording before rendering it to users', async () => {
     const user = userEvent.setup()
     mockPollRun.mockResolvedValueOnce({

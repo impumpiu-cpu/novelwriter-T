@@ -1,17 +1,19 @@
 # SPDX-FileCopyrightText: 2026 Isaac.X.Ω.Yuan
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Real LLM end-to-end copilot tests using the Journey to the West demo.
+"""Real-LLM copilot smoke tests using the Journey to the West demo.
 
 These tests hit the actual LLM provider configured in .env.
-Run with: scripts/uv_run.sh pytest tests/copilot/test_e2e_llm.py -v -s
-Skip with: pytest -m "not e2e_llm"
+Run with: RUN_E2E_LLM=1 scripts/uv_run.sh pytest tests/copilot/test_e2e_llm.py -v -s
+Skip by leaving RUN_E2E_LLM unset or via: pytest -m "not e2e_llm"
 
-Purpose: validate the full copilot pipeline — prompt quality, tool-loop
-behavior, JSON parsing, suggestion compilation — with a real novel world.
+Purpose: validate the full copilot pipeline with a real provider, while
+keeping the live suite intentionally small and operator-invoked only.
 """
 
+from functools import lru_cache
 import json
+import os
 import pytest
 from sqlalchemy import StaticPool, create_engine
 from sqlalchemy.orm import sessionmaker
@@ -28,6 +30,13 @@ from app.models import (
 )
 
 pytestmark = [pytest.mark.e2e_llm, pytest.mark.asyncio]
+_RUN_E2E_LLM = (os.getenv("RUN_E2E_LLM") or "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_E2E_TOOL_ROUNDS = 2
 
 _engine = create_engine(
     "sqlite:///:memory:",
@@ -45,6 +54,12 @@ def _has_llm_config() -> bool:
     except Exception:
         return False
 
+
+if not _RUN_E2E_LLM:
+    pytest.skip(
+        "Set RUN_E2E_LLM=1 to run real-provider copilot E2E tests",
+        allow_module_level=True,
+    )
 
 if not _has_llm_config():
     pytest.skip("No LLM config — skipping E2E LLM tests", allow_module_level=True)
@@ -65,19 +80,48 @@ def db():
         Base.metadata.drop_all(bind=_engine)
 
 
-def _load_chapter_text(chapter_num: int) -> str:
-    """Load a chapter from the demo text by splitting on "第X回" markers."""
+@lru_cache(maxsize=1)
+def _load_demo_chapters() -> tuple[str, ...]:
     import re
+
     with open("data/demo/西游记_前27回.txt", encoding="utf-8") as f:
         text = f.read()
-    # Split by "第X回" pattern
     parts = re.split(r"(第[一二三四五六七八九十百千]+回\s)", text)
-    # Reassemble: each chapter is a marker + body pair
     chapters: list[str] = []
     for i in range(1, len(parts) - 1, 2):
         chapters.append(parts[i] + parts[i + 1])
+    return tuple(chapters)
+
+
+@lru_cache(maxsize=1)
+def _load_worldpack_payload() -> dict:
+    with open("data/worldpacks/journey-to-the-west.json", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@pytest.fixture(autouse=True)
+def _fast_e2e_settings(monkeypatch):
+    import app.config as config_module
+
+    base_settings = config_module.reload_settings()
+    tuned_settings = config_module.Settings.model_validate(
+        {
+            **base_settings.model_dump(),
+            "copilot_max_tool_rounds": _E2E_TOOL_ROUNDS,
+        }
+    )
+
+    monkeypatch.setattr(config_module, "_settings_instance", tuned_settings, raising=False)
+    monkeypatch.setattr(config_module, "get_settings", lambda: tuned_settings)
+    monkeypatch.setattr(config_module, "reload_settings", lambda: tuned_settings)
+    yield
+
+
+def _load_chapter_text(chapter_num: int) -> str:
+    """Load a chapter from the demo text by splitting on "第X回" markers."""
+    chapters = _load_demo_chapters()
     if chapter_num <= 0 or chapter_num > len(chapters):
-        return chapters[0][:5000] if chapters else text[:5000]
+        return chapters[0][:5000] if chapters else ""
     return chapters[chapter_num - 1][:8000]  # Cap for test speed
 
 
@@ -103,8 +147,7 @@ def jtw_world(db):
     db.commit()
 
     # Load worldpack
-    with open("data/worldpacks/journey-to-the-west.json", encoding="utf-8") as f:
-        wp = json.load(f)
+    wp = _load_worldpack_payload()
 
     key_to_entity: dict[str, WorldEntity] = {}
 
@@ -134,8 +177,7 @@ def jtw_world(db):
             status=status, origin=origin,
         )
         db.add(e)
-        db.commit()
-        db.refresh(e)
+        db.flush()
         key_to_entity[key] = e
 
         # Add a few attributes
@@ -194,7 +236,11 @@ async def _run_copilot(db, novel, mode, scope, context, prompt, locale="zh"):
     The test DB *is* the real SessionLocal for this test — we just need to
     make execute_copilot_run find its run/session/novel in our test DB.
     """
-    from app.core.copilot import open_or_reuse_session, create_run, execute_copilot_run
+    from app.core.copilot.service import (
+        create_run,
+        execute_copilot_run,
+        open_or_reuse_session,
+    )
     from app.config import reload_settings
     import app.database as db_mod
 
@@ -252,99 +298,38 @@ def _print_run(label: str, run: CopilotRun):
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Smoke tests
 # ---------------------------------------------------------------------------
 
+async def test_current_entity_enrichment_smoke(db, jtw_world):
+    """Actionable current-entity workflow against a weak field."""
+    run = await _run_copilot(
+        db, jtw_world["novel"],
+        mode="current_entity", scope="current_entity",
+        context={"entity_id": jtw_world["entities"]["zhu-bajie"].id},
+        prompt="猪八戒的描述是空的，帮我补完。",
+    )
+    _print_run("Entity enrichment smoke: 猪八戒", run)
 
-class TestEntityEnrichment:
-    """User clicks "AI 补完" on 孙悟空 — the #1 workflow."""
+    assert run.status == "completed", f"Failed: {run.error}"
+    assert run.answer and len(run.answer) > 20
+    assert len(run.evidence_json or []) > 0
 
-    async def test_enrich_sun_wukong(self, db, jtw_world):
-        run = await _run_copilot(
-            db, jtw_world["novel"],
-            mode="current_entity", scope="current_entity",
-            context={"entity_id": jtw_world["entities"]["sun-wukong"].id},
-            prompt="请帮我补完孙悟空的设定。",
-        )
-        _print_run("Entity enrichment: 孙悟空", run)
-
-        assert run.status == "completed", f"Failed: {run.error}"
-        assert run.answer and len(run.answer) > 20
-        assert len(run.evidence_json or []) > 0
-
-    async def test_enrich_empty_description_entity(self, db, jtw_world):
-        """猪八戒 has empty description — copilot should notice and suggest."""
-        run = await _run_copilot(
-            db, jtw_world["novel"],
-            mode="current_entity", scope="current_entity",
-            context={"entity_id": jtw_world["entities"]["zhu-bajie"].id},
-            prompt="猪八戒的描述是空的，帮我补完。",
-        )
-        _print_run("Entity enrichment: 猪八戒 (empty desc)", run)
-
-        assert run.status == "completed", f"Failed: {run.error}"
-        assert run.answer
-
-        # Should have at least one suggestion targeting 猪八戒
-        suggestions = run.suggestions_json or []
-        if suggestions:
-            targets = [sg.get("target", {}).get("label", "") for sg in suggestions]
-            print(f"  Suggestion targets: {targets}")
+    suggestions = run.suggestions_json or []
+    if suggestions:
+        targets = [sg.get("target", {}).get("label", "") for sg in suggestions]
+        print(f"  Suggestion targets: {targets}")
 
 
-class TestWholeBookInquiry:
-    """User opens whole-book research — inquiry-only is valid."""
+async def test_whole_book_research_smoke(db, jtw_world):
+    """Inquiry-style whole-book workflow remains valid with a live provider."""
+    run = await _run_copilot(
+        db, jtw_world["novel"],
+        mode="research", scope="whole_book",
+        context=None,
+        prompt="帮我盘点一下西游记世界模型的设定缺口。",
+    )
+    _print_run("Whole-book inquiry smoke: 西游记", run)
 
-    async def test_whole_book_analysis(self, db, jtw_world):
-        run = await _run_copilot(
-            db, jtw_world["novel"],
-            mode="research", scope="whole_book",
-            context=None,
-            prompt="帮我盘点一下西游记世界模型的设定缺口。",
-        )
-        _print_run("Whole-book inquiry: 西游记", run)
-
-        assert run.status == "completed", f"Failed: {run.error}"
-        assert run.answer and len(run.answer) > 30
-        # 0 suggestions is fine for inquiry — don't assert > 0
-
-
-class TestDraftCleanup:
-    """User asks to review drafts — 白骨夫人 is a draft with weak fields."""
-
-    async def test_draft_review(self, db, jtw_world):
-        run = await _run_copilot(
-            db, jtw_world["novel"],
-            mode="draft_cleanup", scope="whole_book",
-            context=None,
-            prompt="帮我审查草稿条目，找出需要补全的。",
-        )
-        _print_run("Draft cleanup: 西游记", run)
-
-        assert run.status == "completed", f"Failed: {run.error}"
-        assert run.answer
-
-        # If actionable suggestions exist, they must NOT create new entities
-        for sg in (run.suggestions_json or []):
-            if sg.get("preview", {}).get("actionable"):
-                assert sg["kind"] != "create_entity", \
-                    f"draft_cleanup must not create: {sg.get('title')}"
-
-
-class TestRelationshipGovernance:
-    """User researches 唐僧's relationship network."""
-
-    async def test_relationship_research(self, db, jtw_world):
-        run = await _run_copilot(
-            db, jtw_world["novel"],
-            mode="current_entity", scope="current_entity",
-            context={
-                "entity_id": jtw_world["entities"]["tang-seng"].id,
-                "tab": "relationships",
-            },
-            prompt="帮我梳理唐僧的关系网络，有没有缺失的重要连接？",
-        )
-        _print_run("Relationship governance: 唐僧", run)
-
-        assert run.status == "completed", f"Failed: {run.error}"
-        assert run.answer
+    assert run.status == "completed", f"Failed: {run.error}"
+    assert run.answer and len(run.answer) > 30

@@ -77,6 +77,7 @@ class Workspace:
     round_count: int = 0
     snapshot_fingerprint: str = ""
     final_answer_draft: str | None = None
+    prompt_debug: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -89,6 +90,7 @@ class Workspace:
             "round_count": self.round_count,
             "snapshot_fingerprint": self.snapshot_fingerprint,
             "final_answer_draft": self.final_answer_draft,
+            "prompt_debug": self.prompt_debug,
         }
 
     @classmethod
@@ -107,6 +109,7 @@ class Workspace:
             round_count=payload.get("round_count", 0),
             snapshot_fingerprint=payload.get("snapshot_fingerprint", ""),
             final_answer_draft=payload.get("final_answer_draft"),
+            prompt_debug=payload.get("prompt_debug"),
         )
 
 

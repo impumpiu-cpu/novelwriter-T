@@ -15,6 +15,7 @@ export type LoginOptions = {
   nickname?: string
   username?: string
   password?: string
+  profile?: string
   scope?: string
 }
 
@@ -129,8 +130,27 @@ function readE2EEnvValue(...names: string[]): string | null {
   return null
 }
 
+function readInviteCodes(): string[] {
+  const explicit = readE2EEnvValue('E2E_INVITE_CODE')
+  if (explicit) return [explicit]
+
+  const hostedInviteCodesRaw = readE2EEnvValue('HOSTED_INVITE_CODES')
+  if (!hostedInviteCodesRaw) return []
+
+  try {
+    const parsed = JSON.parse(hostedInviteCodesRaw) as Array<{ code?: unknown }> | null
+    return Array.isArray(parsed)
+      ? parsed
+          .map((item) => (typeof item?.code === 'string' ? item.code.trim() : ''))
+          .filter(Boolean)
+      : []
+  } catch {
+    return []
+  }
+}
+
 export function readInviteCode(): string | null {
-  return readE2EEnvValue('E2E_INVITE_CODE', 'INVITE_CODE')
+  return readInviteCodes()[0] ?? null
 }
 
 export function getDeployMode(): DeployMode {
@@ -149,8 +169,55 @@ function normalizeScope(scope?: string): string {
   return normalized || 'shared'
 }
 
+function normalizeProfile(profile?: string): string | null {
+  const normalized = (profile ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+
+  return normalized || null
+}
+
+function pickInviteCodeForScope(scope: string): string | null {
+  const codes = readInviteCodes()
+  if (codes.length === 0) return null
+  if (codes.length === 1) return codes[0]
+
+  let hash = 0
+  for (const ch of scope) {
+    hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+  }
+  return codes[hash % codes.length] ?? codes[0]
+}
+
 function resolveLoginOptions(options: LoginOptions = {}): ResolvedLoginOptions {
+  const deployMode = getDeployMode()
   const scope = normalizeScope(options.scope)
+  const profile = normalizeProfile(options.profile ?? readE2EEnvValue('E2E_HOSTED_PROFILE'))
+
+  if (deployMode === 'hosted') {
+    const profiledInviteCode = profile ? readE2EEnvValue(`E2E_HOSTED_${profile}_INVITE_CODE`) : null
+    const profiledNickname = profile ? readE2EEnvValue(`E2E_HOSTED_${profile}_NICKNAME`) : null
+    const profiledPassword = profile ? readE2EEnvValue(`E2E_HOSTED_${profile}_PASSWORD`) : null
+    const profiledUsername = profile ? readE2EEnvValue(`E2E_HOSTED_${profile}_USERNAME`) : null
+    const inviteCode = options.inviteCode ?? pickInviteCodeForScope(scope)
+    const hasMultipleInviteCodes = readInviteCodes().length > 1
+    const hostedNickname = options.nickname
+      ?? profiledNickname
+      ?? (hasMultipleInviteCodes ? `e2e_${scope}` : readE2EEnvValue('E2E_HOSTED_NICKNAME') ?? 'e2e_hosted')
+    const hostedPassword = options.password
+      ?? profiledPassword
+      ?? readE2EEnvValue('E2E_HOSTED_PASSWORD')
+      ?? DEFAULT_PASSWORD
+    return {
+      inviteCode: options.inviteCode ?? profiledInviteCode ?? inviteCode,
+      nickname: hostedNickname,
+      username: options.username ?? profiledUsername ?? hostedNickname,
+      password: hostedPassword,
+    }
+  }
+
   return {
     inviteCode: options.inviteCode ?? readInviteCode(),
     nickname: options.nickname ?? `e2e_${scope}`,
@@ -171,16 +238,53 @@ export async function createApiSession(
   const login = resolveLoginOptions(options)
 
   if (deployMode === 'hosted' && !login.inviteCode) {
-    throw new Error('Hosted login requires INVITE_CODE or E2E_INVITE_CODE (set env or repo-root .env).')
+    throw new Error('Hosted login requires HOSTED_INVITE_CODES or E2E_INVITE_CODE (set env or repo-root .env).')
   }
 
+  let hostedErrorBody: string | null = null
+
   const response = deployMode === 'hosted'
-    ? await request.post(`${BACKEND_ORIGIN}/api/auth/invite`, {
-        data: {
-          invite_code: login.inviteCode,
-          nickname: login.nickname,
-        },
-      })
+    ? await (async () => {
+        const loginResponse = await request.post(`${BACKEND_ORIGIN}/api/auth/login`, {
+          form: {
+            username: login.nickname,
+            password: login.password,
+          },
+        })
+        if (loginResponse.ok() || loginResponse.status() !== 401) {
+          return loginResponse
+        }
+
+        const inviteResponse = await request.post(`${BACKEND_ORIGIN}/api/auth/invite`, {
+          data: {
+            invite_code: login.inviteCode,
+            nickname: login.nickname,
+            password: login.password,
+          },
+        })
+
+        if (inviteResponse.ok()) {
+          return inviteResponse
+        }
+
+        const inviteText = await inviteResponse.text()
+        if (inviteResponse.status() === 409 && inviteText.includes('invite_code_already_claimed')) {
+          const retryLoginResponse = await request.post(`${BACKEND_ORIGIN}/api/auth/login`, {
+            form: {
+              username: login.nickname,
+              password: login.password,
+            },
+          })
+          if (retryLoginResponse.ok()) {
+            return retryLoginResponse
+          }
+          hostedErrorBody = await retryLoginResponse.text()
+          return retryLoginResponse
+        }
+
+        hostedErrorBody = inviteText
+        return inviteResponse
+      })()
     : await request.post(`${BACKEND_ORIGIN}/api/auth/login`, {
         form: {
           username: login.username,
@@ -189,7 +293,7 @@ export async function createApiSession(
       })
 
   if (!response.ok()) {
-    const body = await response.text()
+    const body = hostedErrorBody ?? await response.text()
     throw new Error(`E2E auth failed (${deployMode}): ${response.status()} ${body}`)
   }
 
@@ -202,24 +306,68 @@ export async function createApiSession(
   }
 }
 
+async function waitForPostLoginNavigation(page: Page, timeoutMs = 4_000): Promise<boolean> {
+  try {
+    await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: timeoutMs })
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function dismissLoginAlertIfPresent(page: Page): Promise<void> {
+  const dismissButton = page.getByRole('button', { name: /知道了|Got it|确认|Confirm/ }).first()
+  if (await dismissButton.isVisible().catch(() => false)) {
+    await dismissButton.click()
+  }
+}
+
 export async function submitLoginForm(page: Page, options: LoginOptions = {}) {
   await page.getByTestId('login-form').waitFor({ state: 'visible', timeout: 15_000 })
 
   const login = resolveLoginOptions(options)
 
+  if (await page.locator('#username').count()) {
+    await page.getByLabel('用户名').fill(login.username)
+    await page.getByLabel('密码').fill(login.password)
+    await page.getByTestId('login-submit').click()
+    return
+  }
+
+  if (!login.inviteCode) {
+    throw new Error('Hosted login requires HOSTED_INVITE_CODES or E2E_INVITE_CODE (set env or repo-root .env).')
+  }
+
+  if (await page.getByTestId('hosted-mode-login').count()) {
+    await page.getByTestId('hosted-mode-login').click()
+  }
+  await page.locator('#nickname').fill(login.nickname)
+  await page.locator('#hosted-password').fill(login.password)
+  await page.getByTestId('login-submit').click()
+
+  if (await waitForPostLoginNavigation(page, 2_500)) {
+    return
+  }
+
+  await dismissLoginAlertIfPresent(page)
+
+  if (await page.getByTestId('hosted-mode-activate').count()) {
+    await page.getByTestId('hosted-mode-activate').click()
+  }
+
   if (await page.locator('#invite-code').count()) {
     if (!login.inviteCode) {
-      throw new Error('Hosted login requires INVITE_CODE or E2E_INVITE_CODE (set env or repo-root .env).')
+      throw new Error('Hosted login requires HOSTED_INVITE_CODES or E2E_INVITE_CODE (set env or repo-root .env).')
     }
 
     await page.locator('#invite-code').fill(login.inviteCode)
     await page.locator('#nickname').fill(login.nickname)
-  } else {
-    await page.getByLabel('用户名').fill(login.username)
-    await page.getByLabel('密码').fill(login.password)
+    await page.locator('#hosted-password').fill(login.password)
+    await page.getByTestId('login-submit').click()
+    return
   }
 
-  await page.getByTestId('login-submit').click()
+  throw new Error('Hosted activation form was not available after login fallback failed.')
 }
 
 

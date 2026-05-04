@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import secrets
+from typing import Any
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
@@ -14,25 +15,34 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
-from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
 from app.config import get_settings, resolve_context_chapters
 from app.database import get_db
-from app.models import User, UserEvent
+from app.models import Novel, User
 from app.core.auth import (
     AUTH_PROVIDER_GITHUB,
-    AUTH_PROVIDER_INVITE,
     DEFAULT_OAUTH_STATE_TTL_SECONDS,
-    verify_password,
+    activate_hosted_user_for_invite_code,
+    authenticate_hosted_user_by_nickname_password,
     clear_auth_cookie,
     create_oauth_state_token,
     decode_oauth_state_token,
+    get_current_user_optional,
     get_current_user_or_default,
     issue_user_session,
+    normalize_invite_code,
     reconcile_abandoned_quota_reservations,
-    require_admin,
     resolve_or_provision_hosted_user_for_identity,
+    require_admin,
+)
+from app.core.events import (
+    PUBLIC_CLIENT_EVENT_NAMES,
+    build_hosted_beta_funnel_report,
+    normalize_event_meta,
+    public_event_forbids_novel_id,
+    public_event_requires_novel_id,
+    record_event,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -44,9 +54,12 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
 
 
-class InviteRequest(BaseModel):
+class InviteActivationRequest(BaseModel):
     invite_code: str = Field(min_length=1, max_length=100)
     nickname: str = Field(min_length=1, max_length=150)
+    password: str = Field(min_length=8, max_length=128)
+    anonymous_id: str | None = Field(default=None, max_length=64)
+    attribution: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
 REQUIRED_FEEDBACK_KEYS = {"overall_rating", "issues"}
@@ -59,6 +72,19 @@ class FeedbackRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class AuthOptionsResponse(BaseModel):
+    deploy_mode: str
+    invite_login_enabled: bool
+    github_login_enabled: bool
+
+
+class PublicAnalyticsEventRequest(BaseModel):
+    event: str = Field(min_length=1, max_length=64)
+    anonymous_id: str | None = Field(default=None, max_length=64)
+    novel_id: int | None = Field(default=None, ge=1)
+    meta: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
 class UserResponse(BaseModel):
@@ -87,6 +113,70 @@ GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_OAUTH_USER_URL = "https://api.github.com/user"
 GITHUB_OAUTH_SCOPE = "read:user"
 GITHUB_OAUTH_CALLBACK_PATH = "/api/auth/github/callback"
+
+
+def _build_signup_event_meta(
+    *,
+    provider: str,
+    anonymous_id: str | None = None,
+    attribution: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    meta = normalize_event_meta(attribution)
+    meta["admission_provider"] = provider
+    normalized_anonymous_id = (anonymous_id or "").strip()[:64]
+    if normalized_anonymous_id:
+        meta["anonymous_id"] = normalized_anonymous_id
+    return meta
+
+
+def _validate_public_event_scope(
+    *,
+    db: Session,
+    current_user: User | None,
+    event_name: str,
+    novel_id: int | None,
+) -> None:
+    if public_event_requires_novel_id(event_name):
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "code": "analytics_project_event_auth_required",
+                    "message": "Authentication is required for project-scoped analytics events",
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if novel_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "analytics_novel_id_required",
+                    "message": "novel_id is required for this analytics event",
+                },
+            )
+        owned_novel = (
+            db.query(Novel.id)
+            .filter(Novel.id == novel_id, Novel.owner_id == current_user.id)
+            .first()
+        )
+        if owned_novel is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "analytics_novel_not_found",
+                    "message": "Novel not found",
+                },
+            )
+        return
+
+    if public_event_forbids_novel_id(event_name) and novel_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "analytics_novel_id_forbidden",
+                "message": "novel_id is not allowed for this analytics event",
+            },
+        )
 
 
 @dataclass(frozen=True)
@@ -120,6 +210,15 @@ def _request_is_secure(request: Request) -> bool:
 def _github_oauth_is_configured() -> bool:
     settings = get_settings()
     return bool(settings.github_oauth_client_id.strip() and settings.github_oauth_client_secret.strip())
+
+
+def _hosted_github_login_is_enabled() -> bool:
+    settings = get_settings()
+    return (
+        settings.deploy_mode == "hosted"
+        and settings.hosted_github_login_enabled
+        and _github_oauth_is_configured()
+    )
 
 
 def _set_github_oauth_cookie(
@@ -301,41 +400,115 @@ def exchange_github_code_for_identity(
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
     settings = get_settings()
     # Pre-launch hosted auth is admission-gated at the login surface; selfhost uses the default user flow.
+    hosted_message = "Registration disabled in hosted mode; use invite activation + nickname/password login"
+    if settings.hosted_github_login_enabled:
+        hosted_message = "Registration disabled in hosted mode; use invite activation, nickname/password login, or GitHub login"
     raise HTTPException(
         status_code=405,
         detail=(
-            "Registration disabled in hosted mode; use invite code or GitHub login"
+            hosted_message
             if settings.deploy_mode == "hosted"
             else "Registration disabled in selfhost mode"
         ),
     )
 
 
+@router.get("/options", response_model=AuthOptionsResponse)
+def auth_options():
+    settings = get_settings()
+    return AuthOptionsResponse(
+        deploy_mode=settings.deploy_mode,
+        invite_login_enabled=settings.deploy_mode == "hosted" and settings.hosted_invite_login_enabled,
+        github_login_enabled=_hosted_github_login_is_enabled(),
+    )
+
+
+@router.post("/events", status_code=202)
+def record_public_event(
+    body: PublicAnalyticsEventRequest,
+    db: Session = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
+):
+    settings = get_settings()
+    if settings.deploy_mode != "hosted":
+        raise HTTPException(
+            status_code=405,
+            detail={"code": "analytics_events_disabled", "message": "Hosted analytics events are unavailable in selfhost mode"},
+        )
+    if body.event not in PUBLIC_CLIENT_EVENT_NAMES:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "analytics_event_unsupported", "message": "Unsupported analytics event"},
+        )
+
+    _validate_public_event_scope(
+        db=db,
+        current_user=current_user,
+        event_name=body.event,
+        novel_id=body.novel_id,
+    )
+
+    meta = normalize_event_meta(body.meta)
+    anonymous_id = (body.anonymous_id or "").strip() or None
+    if current_user is None and not anonymous_id and not meta.get("anonymous_id"):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "analytics_anonymous_id_required", "message": "anonymous_id is required for unauthenticated analytics events"},
+        )
+
+    record_event(
+        db,
+        current_user.id if current_user is not None else None,
+        body.event,
+        novel_id=body.novel_id,
+        meta=meta,
+        anonymous_id=anonymous_id,
+    )
+    return {"ok": True}
+
+
 @router.post("/invite", response_model=TokenResponse, status_code=201)
-def invite_register(body: InviteRequest, request: Request, response: Response, db: Session = Depends(get_db)):
-    """Register via invite code + nickname (hosted mode only)."""
+def invite_activate(body: InviteActivationRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    """Activate a hosted account via invite code on first use."""
     settings = get_settings()
     if settings.deploy_mode == "selfhost":
-        raise HTTPException(status_code=405, detail="Invite registration disabled in selfhost mode")
+        raise HTTPException(
+            status_code=405,
+            detail={"code": "invite_login_disabled", "message": "Invite activation disabled in selfhost mode"},
+        )
 
-    if not settings.invite_code:
-        raise HTTPException(status_code=503, detail="Invite registration not configured")
+    if not settings.hosted_invite_login_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "invite_login_unconfigured", "message": "Invite activation not configured"},
+        )
 
-    if body.invite_code != settings.invite_code:
-        raise HTTPException(status_code=403, detail="Invalid invite code")
+    invite_attribution = dict(body.attribution)
+    try:
+        normalized_invite_code = normalize_invite_code(body.invite_code)
+    except ValueError:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "invite_code_invalid", "message": "Invalid invite code"},
+        ) from None
 
-    # Generate a unique internal username from nickname
-    nickname = body.nickname.strip()
-    if not nickname:
-        raise HTTPException(status_code=422, detail="nickname cannot be empty")
+    invite_entry = settings.hosted_invite_code_lookup.get(normalized_invite_code)
+    if invite_entry is not None:
+        if invite_entry.channel and not invite_attribution.get("channel"):
+            invite_attribution["channel"] = invite_entry.channel
+        if invite_entry.invite_batch and not invite_attribution.get("invite_batch"):
+            invite_attribution["invite_batch"] = invite_entry.invite_batch
 
-    user, _created = resolve_or_provision_hosted_user_for_identity(
+    user = activate_hosted_user_for_invite_code(
         db,
-        provider=AUTH_PROVIDER_INVITE,
-        provider_user_id=nickname,
-        nickname=nickname,
-        username_seed=nickname,
-        provider_login=nickname,
+        invite_code=normalized_invite_code,
+        nickname=body.nickname,
+        password=body.password,
+        signup_meta=_build_signup_event_meta(
+            provider="invite",
+            anonymous_id=body.anonymous_id,
+            attribution=invite_attribution,
+        ),
     )
     token = issue_user_session(response=response, request=request, user=user)
     return TokenResponse(access_token=token)
@@ -348,6 +521,11 @@ def github_oauth_start(request: Request, redirect_to: str | None = None):
         raise HTTPException(status_code=405, detail="GitHub OAuth disabled in selfhost mode")
 
     safe_redirect = resolve_safe_post_login_redirect(redirect_to)
+    if settings.deploy_mode == "hosted" and not settings.hosted_github_login_enabled:
+        return _redirect_to_login_with_error(
+            oauth_error="github_oauth_disabled",
+            redirect_to=safe_redirect,
+        )
     if not _github_oauth_is_configured():
         return _redirect_to_login_with_error(
             oauth_error="github_oauth_not_configured",
@@ -385,6 +563,8 @@ def github_oauth_callback(
     settings = get_settings()
     if settings.deploy_mode == "selfhost":
         raise HTTPException(status_code=405, detail="GitHub OAuth disabled in selfhost mode")
+    if settings.deploy_mode == "hosted" and not settings.hosted_github_login_enabled:
+        return _redirect_to_login_with_error(oauth_error="github_oauth_disabled")
     if not _github_oauth_is_configured():
         return _redirect_to_login_with_error(oauth_error="github_oauth_not_configured")
 
@@ -420,6 +600,13 @@ def github_oauth_callback(
             username_seed=identity.login,
             provider_login=identity.login,
             provider_email=identity.email,
+            signup_meta=_build_signup_event_meta(
+                provider=AUTH_PROVIDER_GITHUB,
+                attribution={
+                    "entry_path": "github_oauth",
+                    "redirect_to": redirect_to,
+                },
+            ),
         )
     except HTTPException as exc:
         if exc.status_code == 503 and isinstance(exc.detail, dict) and exc.detail.get("code") == "hosted_user_cap_reached":
@@ -453,11 +640,11 @@ def login(request: Request, response: Response, form: OAuth2PasswordRequestForm 
         token = issue_user_session(response=response, request=request, user=user)
         return TokenResponse(access_token=token)
 
-    user = db.query(User).filter(User.username == form.username).first()
-    if not user or not verify_password(form.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+    user = authenticate_hosted_user_by_nickname_password(
+        db,
+        nickname=form.username,
+        password=form.password,
+    )
     token = issue_user_session(response=response, request=request, user=user)
     return TokenResponse(access_token=token)
 
@@ -605,117 +792,10 @@ def export_feedback(
     ]
 
 
-EVENT_CATALOG = {
-    "signup": {
-        "description": "User registered via a hosted auth provider",
-        "funnel_position": 1,
-        "question": "How many people entered the product?",
-    },
-    "novel_upload": {
-        "description": "User uploaded a novel (.txt file parsed into chapters)",
-        "funnel_position": 2,
-        "question": "Activation rate: signup → first upload",
-    },
-    "bootstrap_run": {
-        "description": "Bootstrap pipeline completed (auto-extracts entities/relationships from novel text)",
-        "funnel_position": 3,
-        "question": "Do users run the auto-extraction after uploading?",
-        "meta_keys": {"mode": "bootstrap mode (initial/reextract/index_refresh)", "entities_found": "int", "relationships_found": "int"},
-    },
-    "draft_confirm": {
-        "description": "User accepted AI-generated draft entities/relationships/systems into their world model",
-        "funnel_position": 4,
-        "question": "Adoption rate: what fraction of AI-generated drafts do users keep?",
-        "meta_keys": {"type": "entity|relationship|system", "count": "number confirmed in this batch"},
-    },
-    "draft_reject": {
-        "description": "User rejected (deleted) AI-generated drafts",
-        "funnel_position": 4,
-        "question": "Rejection rate: complement of adoption rate — signals generation quality",
-        "meta_keys": {"type": "entity|relationship|system", "count": "number rejected in this batch"},
-    },
-    "world_generate": {
-        "description": "User generated world model drafts from a text description (设定集 generation)",
-        "funnel_position": 4,
-        "question": "Are users using the text-to-world-model feature?",
-    },
-    "world_edit": {
-        "description": "User manually created or edited a world model element (not bootstrap/AI-generated)",
-        "funnel_position": 5,
-        "question": "Differentiation signal: do users understand and engage with the world model?",
-        "meta_keys": {"action": "create_entity|update_entity|create_relationship|update_relationship|create_system|update_system"},
-    },
-    "generation": {
-        "description": "Novel continuation generated successfully (the core value-delivery moment)",
-        "funnel_position": 6,
-        "question": "Core loop: are users actually generating text?",
-        "meta_keys": {"variants": "number of variants generated", "stream": "true if via streaming endpoint"},
-    },
-    "chapter_save": {
-        "description": "User saved/updated a chapter (may incorporate generated content)",
-        "funnel_position": 7,
-        "question": "Retention signal: are users integrating generated content into their novel?",
-        "meta_keys": {"chapter": "chapter number"},
-    },
-}
-
-
 @router.get("/admin/funnel")
 def get_funnel(
     db: Session = Depends(get_db),
     _admin: User = Depends(require_admin),
 ):
-    """Self-describing analytics endpoint. Response includes event definitions,
-    aggregated funnel data, and recent raw events — paste into any AI for analysis."""
-    # Funnel aggregation
-    rows = (
-        db.query(UserEvent.event, sa_func.count(UserEvent.id), sa_func.count(sa_func.distinct(UserEvent.user_id)))
-        .group_by(UserEvent.event)
-        .all()
-    )
-    total_users = db.query(sa_func.count(User.id)).scalar() or 0
-    funnel = {event: {"total": count, "unique_users": users} for event, count, users in rows}
-
-    # Daily breakdown (last 30 days)
-    import datetime
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=30)
-    daily_rows = (
-        db.query(
-            UserEvent.event,
-            sa_func.date(UserEvent.created_at).label("day"),
-            sa_func.count(UserEvent.id),
-        )
-        .filter(UserEvent.created_at >= cutoff)
-        .group_by(UserEvent.event, "day")
-        .all()
-    )
-    daily = {}
-    for event, day, count in daily_rows:
-        daily.setdefault(event, {})[str(day)] = count
-
-    # Recent raw events (last 100) for pattern inspection
-    recent = (
-        db.query(UserEvent)
-        .order_by(UserEvent.created_at.desc())
-        .limit(100)
-        .all()
-    )
-    recent_events = [
-        {"user_id": e.user_id, "event": e.event, "novel_id": e.novel_id, "meta": e.meta, "created_at": str(e.created_at)}
-        for e in recent
-    ]
-
-    return {
-        "analysis_prompt": (
-            "You are analyzing product analytics for a novel-writing AI tool. "
-            "The core loop is: signup → upload novel → bootstrap (auto-extract world model) → "
-            "review drafts (confirm/reject) → edit world model → generate continuation → save chapter. "
-            "Use event_catalog for event definitions. Identify drop-off points, adoption rates, "
-            "and actionable recommendations."
-        ),
-        "event_catalog": EVENT_CATALOG,
-        "total_users": total_users,
-        "funnel_summary": funnel,
-        "daily_breakdown_last_30d": daily,
-        "recent_events": recent_events,
-    }
+    """Self-describing hosted writer beta analytics payload for admin analysis."""
+    return build_hosted_beta_funnel_report(db)

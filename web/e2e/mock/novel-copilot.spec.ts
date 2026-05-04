@@ -2,17 +2,17 @@ import { test, expect } from '@playwright/test'
 import { mockAllApiRoutes } from '../fixtures/api-helpers'
 
 test.describe('Novel Copilot (mock)', () => {
-  test('world-build card opens the whole-book research workbench', async ({ page }) => {
+  test('Atlas assist workbench opens the whole-book research drawer', async ({ page }) => {
     await mockAllApiRoutes(page)
     await page.goto('/world/1')
     const drawer = page.getByTestId('novel-copilot-drawer')
 
-    await expect(page.getByTestId('world-build-panel')).toBeVisible()
-    await expect(page.getByTestId('world-build-generate')).toBeVisible()
-    await expect(page.getByTestId('novel-copilot-trigger')).toBeVisible()
-    await expect(page.getByText('从全书视角检索设定缺口、潜在线索与值得进一步研究的世界锚点。')).toBeVisible()
+    await expect(page.getByTestId('atlas-assist-workbench')).toBeVisible()
+    await expect(page.getByTestId('atlas-assist-open-whole-book')).toBeVisible()
+    await expect(page.getByTestId('atlas-assist-generate')).toBeVisible()
+    await expect(page.getByTestId('world-build-panel')).toHaveCount(0)
 
-    await page.getByTestId('novel-copilot-trigger').click()
+    await page.getByTestId('atlas-assist-open-whole-book').click()
 
     await expect(drawer).toHaveAttribute('data-state', 'open')
     await expect(drawer.getByText('全书研究').first()).toBeVisible()
@@ -66,9 +66,9 @@ test.describe('Novel Copilot (mock)', () => {
 
     await page.goto('/world/1?tab=entities')
     await expect(page.locator('html')).toHaveClass(/light/)
-    await expect(page.getByTestId('novel-copilot-trigger')).toBeVisible()
+    await expect(page.getByTestId('atlas-assist-open-whole-book')).toBeVisible()
 
-    await page.getByTestId('novel-copilot-trigger').click()
+    await page.getByTestId('atlas-assist-open-whole-book').click()
     await expect(drawer).toHaveAttribute('data-state', 'open')
     await expect(page.getByTestId('novel-copilot-session-strip').getByText('全书探索')).toBeVisible()
     await page.keyboard.press('Escape')
@@ -83,9 +83,12 @@ test.describe('Novel Copilot (mock)', () => {
     await expect(page.getByTestId('novel-copilot-session-strip').getByText('苏瑶')).toBeVisible()
     await expect(drawer.getByText('实体补完')).toBeVisible()
 
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId('novel-copilot-drawer')).toHaveCount(0)
     await page.getByTestId('tab-relationships').click()
     await expect(page.getByTestId('relationship-sidebar-panel')).toBeVisible()
-    await page.getByRole('button', { name: /AI 建议/ }).click()
+    await expect(page.getByRole('button', { name: /AI 建议/ })).toHaveCount(0)
+    await page.getByTestId('atlas-assist-context-action').click()
 
     await expect(page.getByTestId('novel-copilot-session-strip').getByText('苏瑶 ↔ 相关实体')).toBeVisible()
     await expect(page.getByTestId('novel-copilot-session-strip').getByText(/^苏瑶$/)).toBeVisible()
@@ -179,8 +182,9 @@ test.describe('Novel Copilot (mock)', () => {
     await page.getByTestId('entity-row-101').focus()
     await page.getByTestId('entity-row-101').press('Enter')
 
-    // Click trigger for relationship context
-    await page.getByRole('button', { name: /AI 建议/ }).click()
+    // Atlas now owns the relationship research launcher in the assist workbench.
+    await expect(page.getByRole('button', { name: /AI 建议/ })).toHaveCount(0)
+    await page.getByTestId('atlas-assist-context-action').click()
 
     // Drawer opens in the relationship context for the selected entity
     await expect(drawer).toHaveAttribute('data-state', 'open')

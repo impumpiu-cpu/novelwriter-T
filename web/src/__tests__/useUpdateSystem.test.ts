@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { worldKeys } from '@/hooks/world/keys'
-import { createQueryClientWrapper, createTestQueryClient } from './helpers'
+import { createQueryClientWrapper, createTestQueryClient } from '@/__tests__/support/queryClient'
 import { LABELS } from '@/constants/labels'
 
 const toastMock = vi.hoisted(() => vi.fn())

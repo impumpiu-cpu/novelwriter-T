@@ -5,10 +5,12 @@ import { MemoryRouter } from 'react-router-dom'
 import { UiLocaleProvider } from '@/contexts/UiLocaleContext'
 import { WorldGenerationDialog } from '@/components/world-model/shared/WorldGenerationDialog'
 import { ApiError } from '@/services/api'
+import type { WorldpackImportResponse } from '@/types/api'
 
 const mockUseGenerateWorld = vi.fn()
 const mockUseImportWorldpack = vi.fn()
 const navigateMock = vi.fn()
+const trackHostedAnalyticsEventMock = vi.fn().mockResolvedValue(true)
 
 vi.mock('@/hooks/world/useWorldGeneration', () => ({
   useGenerateWorld: (...args: unknown[]) => mockUseGenerateWorld(...args),
@@ -16,6 +18,10 @@ vi.mock('@/hooks/world/useWorldGeneration', () => ({
 
 vi.mock('@/hooks/world/useWorldpack', () => ({
   useImportWorldpack: (...args: unknown[]) => mockUseImportWorldpack(...args),
+}))
+
+vi.mock('@/lib/hostedAnalytics', () => ({
+  trackHostedAnalyticsEvent: (...args: unknown[]) => trackHostedAnalyticsEventMock(...args),
 }))
 
 vi.mock('react-router-dom', async () => {
@@ -26,11 +32,13 @@ vi.mock('react-router-dom', async () => {
   }
 })
 
-function renderDialog() {
+function renderDialog(
+  props?: Partial<Parameters<typeof WorldGenerationDialog>[0]>,
+) {
   return render(
     <MemoryRouter>
       <UiLocaleProvider>
-        <WorldGenerationDialog novelId={7} open onOpenChange={vi.fn()} />
+        <WorldGenerationDialog novelId={7} open onOpenChange={vi.fn()} {...props} />
       </UiLocaleProvider>
     </MemoryRouter>,
   )
@@ -44,6 +52,8 @@ describe('WorldGenerationDialog', () => {
     mockUseGenerateWorld.mockReturnValue({ mutate: vi.fn(), isPending: false })
     mockUseImportWorldpack.mockReturnValue({ mutate: vi.fn(), isPending: false })
     navigateMock.mockReset()
+    trackHostedAnalyticsEventMock.mockReset()
+    trackHostedAnalyticsEventMock.mockResolvedValue(true)
   })
 
   it('renders LLM failures in English when the UI locale is en', async () => {
@@ -96,5 +106,73 @@ describe('WorldGenerationDialog', () => {
     await waitFor(() => {
       expect(screen.getByText('Worldpack import failed. Please try again.')).toBeTruthy()
     })
+  })
+
+  it('tracks setting-generation submit events before mutating', async () => {
+    const mutate = vi.fn()
+    mockUseGenerateWorld.mockReturnValue({ mutate, isPending: false })
+
+    renderDialog()
+
+    await userEvent.type(screen.getByTestId('world-gen-text'), 'Enough setting text to trigger world generation.')
+    await userEvent.click(screen.getByTestId('world-gen-submit'))
+
+    expect(trackHostedAnalyticsEventMock).toHaveBeenCalledWith('world_generate_submit', expect.objectContaining({
+      novelId: 7,
+      meta: expect.objectContaining({
+        source_surface: 'unknown',
+      }),
+    }))
+    expect(mutate).toHaveBeenCalled()
+  })
+
+  it('lets import success stay in-place when the caller opts out of hard navigation', async () => {
+    const onImportSuccess = vi.fn()
+    const response: WorldpackImportResponse = {
+      pack_id: 'pack-1',
+      counts: {
+        entities_created: 2,
+        entities_updated: 0,
+        entities_deleted: 0,
+        attributes_created: 0,
+        attributes_updated: 0,
+        attributes_deleted: 0,
+        relationships_created: 1,
+        relationships_updated: 0,
+        relationships_deleted: 0,
+        systems_created: 1,
+        systems_updated: 0,
+        systems_deleted: 0,
+      },
+      warnings: [],
+    }
+    const mutate = vi.fn((_payload, options) => {
+      options?.onSuccess?.(response)
+    })
+    mockUseImportWorldpack.mockReturnValue({ mutate, isPending: false })
+
+    const { container } = renderDialog({
+      onImportSuccess,
+      navigateOnImportSuccess: false,
+    })
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement | null
+    expect(fileInput).not.toBeNull()
+
+    const file = new File(
+      [JSON.stringify({ schema_version: 'worldpack.v1', pack_name: 'Atlas seed' })],
+      'worldpack.json',
+      { type: 'application/json' },
+    )
+    Object.defineProperty(file, 'text', {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(JSON.stringify({ schema_version: 'worldpack.v1', pack_name: 'Atlas seed' })),
+    })
+
+    await userEvent.upload(fileInput!, file)
+
+    await waitFor(() => {
+      expect(onImportSuccess).toHaveBeenCalledWith(response)
+    })
+    expect(navigateMock).not.toHaveBeenCalled()
   })
 })

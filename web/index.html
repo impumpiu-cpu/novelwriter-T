@@ -7,10 +7,11 @@
     <title>NovWr - Continue Your Story</title>
   </head>
   <body>
-    <!-- Prevent light-mode flash: if user saved "light", add class before paint -->
+    <!-- Prevent theme flash: default to light on first visit, otherwise respect the saved choice -->
     <script>
       try {
-        var t = localStorage.getItem('novwr_theme') === 'light' ? 'light' : 'dark';
+        var savedTheme = localStorage.getItem('novwr_theme');
+        var t = savedTheme === 'dark' ? 'dark' : 'light';
         if (t === 'light') document.documentElement.classList.add('light');
         document.documentElement.style.colorScheme = t;
       } catch (e) {}

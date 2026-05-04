@@ -9,11 +9,13 @@ export function StudioModeRailSection({
   latestChapterReference,
   onContinuation,
   onOpenAtlas,
+  onWarmAtlas,
 }: {
   activeStage: NovelShellStage | null
   latestChapterReference: string | null
   onContinuation: () => void
   onOpenAtlas: () => void
+  onWarmAtlas?: () => void
 }) {
   const { t } = useUiLocale()
 
@@ -50,6 +52,8 @@ export function StudioModeRailSection({
         <button
           type="button"
           onClick={onOpenAtlas}
+          onMouseEnter={onWarmAtlas}
+          onFocus={onWarmAtlas}
           className={cn(
             'w-full rounded-[14px] border border-[var(--nw-glass-border)] bg-background/15 px-3 py-3 text-left transition-all',
             'flex items-start gap-3 text-foreground/85 hover:bg-foreground/5',

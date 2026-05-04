@@ -15,12 +15,14 @@ from app.models import (  # noqa: F401 - register models with Base.metadata
     BootstrapJob,
     Chapter,
     Continuation,
+    ContinuationRun,
     DerivedAssetJob,
     Exploration,
     ExplorationChapter,
     LoreEntry,
     LoreKey,
     Novel,
+    NovelIngestJob,
     Outline,
     TokenUsage,
     User,
@@ -37,6 +39,9 @@ _HEAD_REVISION = "head"
 _PRE_NOVEL_LANGUAGE_REVISION = "022"
 _PRE_DERIVED_ASSET_JOB_REVISION = "029"
 _PRE_CHAPTER_SOURCE_METADATA_REVISION = "030"
+_PRE_AUTH_IDENTITIES_REVISION = "032"
+_PRE_NOVEL_INGEST_JOB_REVISION = "034"
+_PRE_WORLD_GENERATION_ADMISSION_REVISION = "035"
 _CORE_TABLES = {"novels", "chapters"}
 _LEGACY_TABLES = {
     "narrative_events",
@@ -74,6 +79,7 @@ _REQUIRED_SCHEMA_COLUMNS: dict[str, set[str]] = {
     "world_systems": {"origin", "worldpack_pack_id"},
     "users": {"nickname", "generation_quota", "feedback_submitted", "feedback_answers", "preferences"},
     "bootstrap_jobs": {"mode", "draft_policy", "initialized"},
+    "continuation_runs": {"semantic_key"},
     "derived_asset_jobs": {
         "asset_kind",
         "status",
@@ -87,14 +93,66 @@ _REQUIRED_SCHEMA_COLUMNS: dict[str, set[str]] = {
         "started_at",
         "finished_at",
     },
+    "novel_ingest_jobs": {
+        "status",
+        "stage",
+        "size_tier",
+        "source_bytes",
+        "source_chars",
+        "chapter_count",
+        "requested_language",
+        "resolved_language",
+        "auto_index_plan",
+        "bootstrap_plan",
+        "readiness_mode",
+        "error",
+        "lease_owner",
+        "lease_expires_at",
+        "started_at",
+        "finished_at",
+    },
     "user_events": {"user_id", "event", "created_at"},
+    "world_generation_runs": {
+        "request_hash",
+        "claim_token",
+        "status",
+        "response_payload",
+        "error_code",
+        "error_message",
+        "completed_at",
+    },
 }
 _UNVERSIONED_AUTO_UPGRADE_BASELINES: tuple[tuple[str, dict[str, set[str]]], ...] = (
+    (
+        _PRE_WORLD_GENERATION_ADMISSION_REVISION,
+        {
+            "continuation_runs": _REQUIRED_SCHEMA_COLUMNS["continuation_runs"],
+            "world_generation_runs": _REQUIRED_SCHEMA_COLUMNS["world_generation_runs"],
+        },
+    ),
+    (
+        _PRE_NOVEL_INGEST_JOB_REVISION,
+        {
+            "continuation_runs": _REQUIRED_SCHEMA_COLUMNS["continuation_runs"],
+            "novel_ingest_jobs": _REQUIRED_SCHEMA_COLUMNS["novel_ingest_jobs"],
+            "world_generation_runs": _REQUIRED_SCHEMA_COLUMNS["world_generation_runs"],
+        },
+    ),
+    (
+        _PRE_AUTH_IDENTITIES_REVISION,
+        {
+            "continuation_runs": _REQUIRED_SCHEMA_COLUMNS["continuation_runs"],
+            "novel_ingest_jobs": _REQUIRED_SCHEMA_COLUMNS["novel_ingest_jobs"],
+            "world_generation_runs": _REQUIRED_SCHEMA_COLUMNS["world_generation_runs"],
+        },
+    ),
     (
         _PRE_CHAPTER_SOURCE_METADATA_REVISION,
         {
             "auth_identities": _REQUIRED_SCHEMA_COLUMNS["auth_identities"],
             "chapters": _REQUIRED_SCHEMA_COLUMNS["chapters"],
+            "continuation_runs": _REQUIRED_SCHEMA_COLUMNS["continuation_runs"],
+            "world_generation_runs": _REQUIRED_SCHEMA_COLUMNS["world_generation_runs"],
         },
     ),
     (
@@ -102,7 +160,10 @@ _UNVERSIONED_AUTO_UPGRADE_BASELINES: tuple[tuple[str, dict[str, set[str]]], ...]
         {
             "auth_identities": _REQUIRED_SCHEMA_COLUMNS["auth_identities"],
             "chapters": _REQUIRED_SCHEMA_COLUMNS["chapters"],
+            "continuation_runs": _REQUIRED_SCHEMA_COLUMNS["continuation_runs"],
             "derived_asset_jobs": _REQUIRED_SCHEMA_COLUMNS["derived_asset_jobs"],
+            "novel_ingest_jobs": _REQUIRED_SCHEMA_COLUMNS["novel_ingest_jobs"],
+            "world_generation_runs": _REQUIRED_SCHEMA_COLUMNS["world_generation_runs"],
         },
     ),
     (
@@ -117,7 +178,10 @@ _UNVERSIONED_AUTO_UPGRADE_BASELINES: tuple[tuple[str, dict[str, set[str]]], ...]
                 "window_index_error",
             },
             "chapters": _REQUIRED_SCHEMA_COLUMNS["chapters"],
+            "continuation_runs": _REQUIRED_SCHEMA_COLUMNS["continuation_runs"],
             "derived_asset_jobs": _REQUIRED_SCHEMA_COLUMNS["derived_asset_jobs"],
+            "novel_ingest_jobs": _REQUIRED_SCHEMA_COLUMNS["novel_ingest_jobs"],
+            "world_generation_runs": _REQUIRED_SCHEMA_COLUMNS["world_generation_runs"],
         },
     ),
 )
@@ -180,6 +244,22 @@ def _matching_unversioned_upgrade_baseline(missing_columns: dict[str, set[str]])
     return None
 
 
+def _revision_number(revision: str | None) -> int | None:
+    if revision is None:
+        return None
+    try:
+        return int(revision)
+    except (TypeError, ValueError):
+        return None
+
+
+def _recorded_revision(bind) -> str | None:
+    try:
+        return bind.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+    except Exception:
+        return None
+
+
 def ensure_selfhost_database_ready(
     *,
     db_engine: Engine,
@@ -232,6 +312,22 @@ def ensure_selfhost_database_ready(
                 stamp_revision = baseline_revision
                 should_upgrade = True
         else:
+            missing_columns = _missing_required_columns(bind)
+            baseline_revision = _matching_unversioned_upgrade_baseline(missing_columns)
+            current_revision = _recorded_revision(bind)
+            if (
+                baseline_revision is not None
+                and (baseline_number := _revision_number(baseline_revision)) is not None
+                and (current_number := _revision_number(current_revision)) is not None
+                and baseline_number > current_number
+            ):
+                logger.warning(
+                    "Database schema already matches additive revision %s while alembic_version is %s; "
+                    "stamping forward before upgrade to repair partial migration state.",
+                    baseline_revision,
+                    current_revision,
+                )
+                stamp_revision = baseline_revision
             should_upgrade = True
 
     if stamp_revision is not None:

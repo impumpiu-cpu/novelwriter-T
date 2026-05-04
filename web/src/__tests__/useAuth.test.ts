@@ -3,7 +3,7 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import React from 'react'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { api } from '@/services/api'
-import { createQueryClientWrapper } from '@/__tests__/helpers'
+import { createQueryClientWrapper } from '@/__tests__/support/queryClient'
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const QueryClientWrapper = createQueryClientWrapper()

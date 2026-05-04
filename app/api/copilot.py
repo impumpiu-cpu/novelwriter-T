@@ -22,19 +22,18 @@ from app.core.auth import (
     get_current_user_or_default,
     open_quota_reservation,
 )
-from app.core.copilot import (
-    CopilotError,
-    apply_suggestions,
-    check_stale_run,
+from app.core.copilot.apply import apply_suggestions
+from app.core.copilot.runtime_errors import CopilotError
+from app.core.copilot.run_state import check_stale_run
+from app.core.copilot.runtime_lookup import load_latest_run, load_run, load_session
+from app.core.copilot.service import (
     create_run,
-    dismiss_suggestions,
     execute_copilot_run,
-    list_session_runs,
-    load_latest_run,
-    load_run,
-    load_session,
     open_or_reuse_session,
 )
+from app.core.copilot.session_runtime import list_session_runs
+from app.core.copilot.suggestions import dismiss_suggestions
+from app.core.events import record_event
 from app.core.llm_request import get_llm_config
 from app.database import get_db
 from app.models import Novel, User
@@ -66,6 +65,22 @@ def _handle_copilot_error(exc: CopilotError) -> None:
         status_code=exc.status_code,
         detail={"code": exc.code, "message": exc.message},
     )
+
+
+def _copilot_session_event_meta(session, *, extra: dict[str, object] | None = None) -> dict[str, object]:
+    meta: dict[str, object] = {
+        "mode": getattr(session, "mode", ""),
+        "scope": getattr(session, "scope", ""),
+    }
+    context = getattr(session, "context_json", None)
+    if isinstance(context, dict):
+        for key in ("surface", "stage", "tab"):
+            value = context.get(key)
+            if isinstance(value, str) and value.strip():
+                meta[key] = value.strip()
+    if extra:
+        meta.update(extra)
+    return meta
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +181,20 @@ async def run_create(
             user_id=user.id,
             llm_config=llm_config,
         )
+    )
+
+    record_event(
+        db,
+        user.id,
+        "copilot_run",
+        novel_id=novel_id,
+        meta=_copilot_session_event_meta(
+            session,
+            extra={
+                "quick_action_id": body.quick_action_id,
+                "is_resume": body.resume_run_id is not None,
+            },
+        ),
     )
 
     return _run_to_response(run)
@@ -276,6 +305,20 @@ def run_apply(
         run,
         body.suggestion_ids,
         getattr(getattr(run, "session", None), "interaction_locale", "zh"),
+    )
+    success_count = sum(1 for result in results if result.success)
+    record_event(
+        db,
+        user.id,
+        "copilot_apply",
+        novel_id=novel_id,
+        meta=_copilot_session_event_meta(
+            getattr(run, "session", None),
+            extra={
+                "requested_count": len(body.suggestion_ids),
+                "success_count": success_count,
+            },
+        ),
     )
     return CopilotApplyResponse(
         results=[

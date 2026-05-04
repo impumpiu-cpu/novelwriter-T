@@ -109,13 +109,13 @@ export function NovelCopilotCard({
                 <span className="flex-1">{compact ? t('copilot.card.generateFromSettings') : t('copilot.card.generateFromSettingsLong')}</span>
               </button>
 
-              <BootstrapPanel novelId={novelId} variant="sidebar" />
+              <BootstrapPanel novelId={novelId} variant="sidebar" analyticsSource="copilot_card" />
             </div>
           </div>
         </div>
       </div>
 
-      <WorldGenerationDialog novelId={novelId} open={genOpen} onOpenChange={setGenOpen} />
+      <WorldGenerationDialog novelId={novelId} open={genOpen} onOpenChange={setGenOpen} analyticsSource="copilot_card" />
     </div>
   )
 }

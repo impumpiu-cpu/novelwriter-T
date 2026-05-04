@@ -10,9 +10,9 @@ describe('useTheme', () => {
     vi.restoreAllMocks()
   })
 
-  it('defaults to dark when no preference saved', () => {
+  it('defaults to light when no preference saved', () => {
     const { result } = renderHook(() => useTheme())
-    expect(result.current.theme).toBe('dark')
+    expect(result.current.theme).toBe('light')
   })
 
   it('reads from localStorage', () => {
@@ -27,24 +27,25 @@ describe('useTheme', () => {
     expect(document.documentElement.classList.contains('light')).toBe(true)
   })
 
-  it('does not add any class for dark mode (dark is default)', () => {
+  it('does not add any class for dark mode when the user explicitly selected dark', () => {
+    localStorage.setItem('novwr_theme', 'dark')
     const { result } = renderHook(() => useTheme())
     expect(result.current.theme).toBe('dark')
     expect(document.documentElement.classList.contains('light')).toBe(false)
     expect(document.documentElement.classList.contains('dark')).toBe(false)
   })
 
-  it('toggleTheme switches dark → light → dark', () => {
+  it('toggleTheme switches light → dark → light', () => {
     const { result } = renderHook(() => useTheme())
-    expect(result.current.theme).toBe('dark')
-
-    act(() => result.current.toggleTheme())
     expect(result.current.theme).toBe('light')
-    expect(document.documentElement.classList.contains('light')).toBe(true)
 
     act(() => result.current.toggleTheme())
     expect(result.current.theme).toBe('dark')
     expect(document.documentElement.classList.contains('light')).toBe(false)
+
+    act(() => result.current.toggleTheme())
+    expect(result.current.theme).toBe('light')
+    expect(document.documentElement.classList.contains('light')).toBe(true)
   })
 
   it('persists theme to localStorage', () => {
@@ -53,18 +54,18 @@ describe('useTheme', () => {
     expect(localStorage.getItem('novwr_theme')).toBe('light')
   })
 
-  it('falls back to dark for invalid stored values', () => {
+  it('falls back to light for invalid stored values', () => {
     localStorage.setItem('novwr_theme', 'banana')
     const { result } = renderHook(() => useTheme())
-    expect(result.current.theme).toBe('dark')
+    expect(result.current.theme).toBe('light')
   })
 
-  it('falls back to dark when localStorage.getItem throws (SecurityError)', () => {
+  it('falls back to light when localStorage.getItem throws (SecurityError)', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
       throw new DOMException('denied', 'SecurityError')
     })
     const { result } = renderHook(() => useTheme())
-    expect(result.current.theme).toBe('dark')
+    expect(result.current.theme).toBe('light')
   })
 
   it('does not throw when localStorage.setItem throws (QuotaExceededError)', () => {
@@ -80,8 +81,8 @@ describe('useTheme', () => {
 
   it('sets color-scheme on documentElement', () => {
     const { result } = renderHook(() => useTheme())
-    expect(document.documentElement.style.colorScheme).toBe('dark')
-    act(() => result.current.setTheme('light'))
     expect(document.documentElement.style.colorScheme).toBe('light')
+    act(() => result.current.setTheme('dark'))
+    expect(document.documentElement.style.colorScheme).toBe('dark')
   })
 })

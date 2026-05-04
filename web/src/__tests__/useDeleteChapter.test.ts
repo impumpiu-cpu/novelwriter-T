@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { novelKeys } from '@/hooks/novel/keys'
-import { createQueryClientWrapper, createTestQueryClient } from './helpers'
+import { createQueryClientWrapper, createTestQueryClient } from '@/__tests__/support/queryClient'
 
 vi.mock('@/services/api', () => ({
   api: {

@@ -8,20 +8,24 @@ import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { PerformanceModeProvider } from '@/contexts/PerformanceModeContext'
 import { UiLocaleProvider } from '@/contexts/UiLocaleContext'
 import { PageShell } from '@/components/layout/PageShell'
-import { Home } from '@/pages/Home'
 
+const Home = lazy(() => import('@/pages/Home'))
 const Login = lazy(() => import('@/pages/Login'))
+const DemoEntryPage = lazy(() => import('@/pages/DemoEntryPage').then((module) => ({ default: module.DemoEntryPage })))
 const Settings = lazy(() => import('@/pages/Settings'))
 const Terms = lazy(() => import('@/pages/Terms'))
 const Privacy = lazy(() => import('@/pages/Privacy'))
 const CopyrightNotice = lazy(() => import('@/pages/CopyrightNotice'))
 const LibraryPage = lazy(() => import('@/pages/LibraryPage').then((module) => ({ default: module.LibraryPage })))
 const NovelStudioPage = lazy(() => import('@/pages/NovelStudioPage').then((module) => ({ default: module.NovelStudioPage })))
-const GenerationResults = lazy(() => import('@/pages/GenerationResults').then((module) => ({ default: module.GenerationResults })))
 const NovelAtlasPage = lazy(() => import('@/pages/NovelAtlasPage').then((module) => ({ default: module.NovelAtlasPage })))
 const NovelShell = lazy(() => import('@/components/novel-shell/NovelShell').then((module) => ({ default: module.NovelShell })))
 
 const queryClient = new QueryClient()
+
+function HomeRouteFallback() {
+  return <div aria-hidden="true" className="min-h-[100svh]" />
+}
 
 /** Shared shell (animated background + navbar). */
 function Layout() {
@@ -62,10 +66,15 @@ export default function App() {
                 <Routes>
                   {/* Old-layout pages */}
                   <Route element={<Layout />}>
-                    <Route path="/" element={<Home />} />
+                    <Route path="/" element={(
+                      <Suspense fallback={<HomeRouteFallback />}>
+                        <Home />
+                      </Suspense>
+                    )} />
                     <Route path="/terms" element={<Terms />} />
                     <Route path="/privacy" element={<Privacy />} />
                     <Route path="/copyright" element={<CopyrightNotice />} />
+                    <Route path="/demo" element={<DemoEntryPage />} />
                     <Route element={<RequireAuth />}>
                       <Route path="/settings" element={<Settings />} />
                     </Route>
@@ -79,7 +88,6 @@ export default function App() {
                         <Route path="/world/:novelId" element={<NovelAtlasPage />} />
                       </Route>
                       <Route path="/novel/:novelId" element={<NovelStudioPage />} />
-                      <Route path="/novel/:novelId/chapter/:chapterNum/results" element={<GenerationResults />} />
                     </Route>
                   </Route>
                   {/* Login (standalone) */}

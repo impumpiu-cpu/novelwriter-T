@@ -4,6 +4,7 @@ import pytest
 import tempfile
 import os
 from app.core.parser import parse_novel_file, chinese_to_arabic
+from app.core.ingest.parser_service import parse_source_file
 
 
 # --- chinese_to_arabic ---
@@ -203,5 +204,31 @@ def test_gbk_encoding():
         assert len(result) == 1
         assert result[0].source_chapter_label == "第一章 测试"
         assert result[0].title == "测试"
+    finally:
+        os.unlink(path)
+
+
+def test_parse_source_file_matches_parser_output_for_chaptered_text():
+    content = "第一章 开端\n这是第一章的内容。\n第二章 发展\n这是第二章的内容。\n"
+    path = _write_tmp(content)
+    try:
+        parsed = parse_source_file(path, requested_language=None)
+        direct = parse_novel_file(path)
+        assert parsed.resolved_language == "zh"
+        assert parsed.source_chars == len(content)
+        assert parsed.chapters == direct
+    finally:
+        os.unlink(path)
+
+
+def test_parse_source_file_matches_parser_output_without_markers():
+    content = "Just some text without any chapter markers."
+    path = _write_tmp(content)
+    try:
+        parsed = parse_source_file(path, requested_language="en")
+        direct = parse_novel_file(path, language="en")
+        assert parsed.resolved_language == "en"
+        assert parsed.source_chars == len(content)
+        assert parsed.chapters == direct
     finally:
         os.unlink(path)

@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import StaticPool, create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.core.indexing import mark_window_index_build_failed, mark_window_index_build_succeeded
+from app.core.indexing import mark_window_index_build_succeeded
 from app.database import Base, get_db
 from app.models import Chapter, Novel
 
@@ -15,6 +15,15 @@ engine = create_engine(
     poolclass=StaticPool,
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def _run_window_index_jobs(*, max_rounds: int = 5) -> None:
+    from app.core.indexing import run_next_window_index_rebuild_job
+
+    for _ in range(max_rounds):
+        if not run_next_window_index_rebuild_job(session_factory=TestingSessionLocal):
+            return
+    raise AssertionError("window-index worker did not go idle in time")
 
 
 @pytest.fixture(scope="function")
@@ -86,6 +95,38 @@ class TestCreateChapter:
         db.refresh(novel)
         assert novel.total_chapters == 3
 
+    def test_create_chapter_records_chapter_save_event(self, client, novel, monkeypatch):
+        from app.api import novel_chapters
+
+        recorded: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            novel_chapters,
+            "record_event",
+            lambda db, user_id, event, novel_id=None, meta=None: recorded.append(
+                {
+                    "user_id": user_id,
+                    "event": event,
+                    "novel_id": novel_id,
+                    "meta": meta,
+                }
+            ),
+        )
+
+        resp = client.post(
+            f"/api/novels/{novel.id}/chapters",
+            json={"chapter_number": 3, "title": "第三章", "content": "内容三"},
+        )
+
+        assert resp.status_code == 201
+        assert recorded == [
+            {
+                "user_id": 1,
+                "event": "chapter_save",
+                "novel_id": novel.id,
+                "meta": {"chapter": 3},
+            }
+        ]
+
     def test_create_chapter_auto_number(self, client, db, novel):
         resp = client.post(
             f"/api/novels/{novel.id}/chapters",
@@ -99,6 +140,38 @@ class TestCreateChapter:
 
         db.refresh(novel)
         assert novel.total_chapters == 3
+
+    def test_create_chapter_auto_number_records_chapter_save_event(self, client, novel, monkeypatch):
+        from app.api import novel_chapters
+
+        recorded: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            novel_chapters,
+            "record_event",
+            lambda db, user_id, event, novel_id=None, meta=None: recorded.append(
+                {
+                    "user_id": user_id,
+                    "event": event,
+                    "novel_id": novel_id,
+                    "meta": meta,
+                }
+            ),
+        )
+
+        resp = client.post(
+            f"/api/novels/{novel.id}/chapters",
+            json={"title": "自动编号章", "content": "自动内容"},
+        )
+
+        assert resp.status_code == 201
+        assert recorded == [
+            {
+                "user_id": 1,
+                "event": "chapter_save",
+                "novel_id": novel.id,
+                "meta": {"chapter": 3},
+            }
+        ]
 
     def test_create_chapter_auto_number_fills_gap_after_delete(self, client, db, novel):
         # Arrange: chapters 1,2,3 exist.
@@ -235,6 +308,8 @@ class TestWindowIndexLifecycle:
         db.commit()
 
     def test_create_chapter_rebuilds_window_index(self, client, db, novel):
+        from app.core.indexing import inspect_window_index_rebuild_job
+
         self._seed_fresh_index(db, novel)
 
         resp = client.post(
@@ -244,6 +319,17 @@ class TestWindowIndexLifecycle:
 
         assert resp.status_code == 201
         db.refresh(novel)
+        assert novel.window_index_status == "stale"
+        assert novel.window_index_revision == 2
+        assert novel.window_index_built_revision == 1
+        assert novel.window_index == b"old-index"
+        job = inspect_window_index_rebuild_job(db, novel_id=novel.id)
+        assert job is not None
+        assert job.status == "queued"
+
+        _run_window_index_jobs()
+
+        db.refresh(novel)
         assert novel.window_index_status == "fresh"
         assert novel.window_index_revision == 2
         assert novel.window_index_built_revision == 2
@@ -252,25 +338,14 @@ class TestWindowIndexLifecycle:
         assert novel.window_index_error is None
 
     def test_update_chapter_background_failure_marks_window_index_failed(self, client, db, novel, monkeypatch):
-        from app.api import novels as novels_api
+        import app.core.indexing.lifecycle as lifecycle_module
 
         self._seed_fresh_index(db, novel)
-
-        def _fail_rebuild(novel_id, *, session_factory, settings=None):
-            error_db = session_factory()
-            try:
-                current = error_db.get(Novel, novel_id)
-                assert current is not None
-                mark_window_index_build_failed(
-                    current,
-                    error="窗口索引重建失败，请稍后重试",
-                    revision=int(current.window_index_revision or 0),
-                )
-                error_db.commit()
-            finally:
-                error_db.close()
-
-        monkeypatch.setattr(novels_api, "run_window_index_rebuild_for_latest_revision", _fail_rebuild)
+        monkeypatch.setattr(
+            lifecycle_module,
+            "execute_state_proto_build",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
 
         resp = client.put(
             f"/api/novels/{novel.id}/chapters/1",
@@ -279,6 +354,9 @@ class TestWindowIndexLifecycle:
 
         assert resp.status_code == 200
         db.refresh(novel)
+        assert novel.window_index_status == "stale"
+        _run_window_index_jobs()
+        db.refresh(novel)
         assert novel.window_index_status == "failed"
         assert novel.window_index_revision == 2
         assert novel.window_index_built_revision == 1
@@ -286,11 +364,23 @@ class TestWindowIndexLifecycle:
         assert novel.window_index_error == "窗口索引重建失败，请稍后重试"
 
     def test_delete_chapter_rebuilds_window_index(self, client, db, novel):
+        from app.core.indexing import inspect_window_index_rebuild_job
+
         self._seed_fresh_index(db, novel)
 
         resp = client.delete(f"/api/novels/{novel.id}/chapters/2")
 
         assert resp.status_code == 204
+        db.refresh(novel)
+        assert novel.window_index_status == "stale"
+        assert novel.window_index_revision == 2
+        assert novel.window_index_built_revision == 1
+        job = inspect_window_index_rebuild_job(db, novel_id=novel.id)
+        assert job is not None
+        assert job.status == "queued"
+
+        _run_window_index_jobs()
+
         db.refresh(novel)
         assert novel.window_index_status == "fresh"
         assert novel.window_index_revision == 2

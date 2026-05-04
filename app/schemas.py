@@ -23,15 +23,10 @@ class NovelBase(BaseModel):
     @classmethod
     def _normalize_language_field(cls, v: object) -> object:
         return normalize_language_code(v if isinstance(v, str) else None, default=DEFAULT_LANGUAGE)
-
-
-class NovelCreate(NovelBase):
-    pass
-
-
 class NovelResponse(NovelBase):
     id: int
     total_chapters: int
+    is_seeded_demo: bool = False
     window_index: "WindowIndexStateResponse"
     created_at: datetime
     updated_at: datetime
@@ -53,11 +48,100 @@ class DerivedAssetJobStatus(str, Enum):
     FAILED = "failed"
 
 
+class NovelIngestJobStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class NovelIngestJobStage(str, Enum):
+    ACCEPTED = "accepted"
+    DECODING = "decoding"
+    PARSING = "parsing"
+    PERSISTING = "persisting"
+    PLANNING = "planning"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class NovelIngestSizeTier(str, Enum):
+    NORMAL = "normal"
+    LARGE = "large"
+    XLARGE = "xlarge"
+    REJECT = "reject"
+
+
+class WindowIndexReadinessStatus(str, Enum):
+    ACCEPTING = "accepting"
+    PROCESSING = "processing"
+    READY = "ready"
+    DEGRADED_READY = "degraded_ready"
+    FAILED_RETRYABLE = "failed_retryable"
+
+
+class WindowIndexCapabilitiesResponse(BaseModel):
+    chapters_available: bool
+    whole_book_index_available: bool
+    bootstrap_available: bool
+    recent_fallback_only: bool
+
+
+class NovelIngestJobResponse(BaseModel):
+    status: NovelIngestJobStatus
+    stage: NovelIngestJobStage
+    size_tier: NovelIngestSizeTier | None = None
+    source_bytes: int
+    source_chars: int | None = None
+    chapter_count: int | None = None
+    requested_language: str | None = None
+    resolved_language: str | None = None
+    auto_index_plan: str | None = None
+    bootstrap_plan: str | None = None
+    readiness_mode: str | None = None
+    error: str | None = None
+
+
+class WindowIndexJobMetricsResponse(BaseModel):
+    queue_wait_ms: float | None = None
+    load_chapters_ms: float | None = None
+    build_artifacts_ms: float | None = None
+    serialize_ms: float | None = None
+    persist_ms: float | None = None
+    full_build_ms: float | None = None
+    chapter_count: int | None = None
+    chapter_chars: int | None = None
+    payload_bytes: int | None = None
+    rss_kib: int | None = None
+    peak_rss_kib: int | None = None
+    index_backend: str | None = None
+    executor_backend: str | None = None
+    target_count: int | None = None
+    segment_count: int | None = None
+    mention_posting_count: int | None = None
+    claim_atom_count: int | None = None
+    coverage_rep_count: int | None = None
+    discover_targets_ms: float | None = None
+    segmentation_ms: float | None = None
+    mention_ms: float | None = None
+    claim_ms: float | None = None
+    coverage_ms: float | None = None
+    plan_mode: str | None = None
+    incremental_applied: bool | None = None
+    rebuilt_chapter_count: int | None = None
+    reused_chapter_count: int | None = None
+    fallback_reason: str | None = None
+
+
 class WindowIndexJobResponse(BaseModel):
     status: DerivedAssetJobStatus
     target_revision: int
     completed_revision: int | None = None
     error: str | None = None
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    metrics: WindowIndexJobMetricsResponse | None = None
 
 
 class WindowIndexStateResponse(BaseModel):
@@ -65,6 +149,9 @@ class WindowIndexStateResponse(BaseModel):
     revision: int = 0
     built_revision: int | None = None
     error: str | None = None
+    readiness: WindowIndexReadinessStatus = WindowIndexReadinessStatus.PROCESSING
+    capabilities: WindowIndexCapabilitiesResponse
+    ingest: NovelIngestJobResponse | None = None
     job: WindowIndexJobResponse | None = None
 
 
@@ -103,19 +190,6 @@ class ChapterCreateRequest(BaseModel):
     chapter_number: int | None = None  # default: smallest missing positive chapter number
     title: str = ""
     content: str = ""
-
-
-class OutlineResponse(BaseModel):
-    id: int
-    novel_id: int
-    chapter_start: int
-    chapter_end: int
-    outline_text: str
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
 class ContinuationResponse(BaseModel):
     id: int
     novel_id: int
@@ -153,20 +227,11 @@ class ContinueRequest(BaseModel):
         if self.context_chapters is not None and self.context_chapters > MAX_CONTEXT_CHAPTERS:
             self.context_chapters = MAX_CONTEXT_CHAPTERS
         return self
-
-
-class RatingRequest(BaseModel):
-    rating: int = Field(ge=1, le=5)
-
-
 class UploadResponse(BaseModel):
     novel_id: int
-    total_chapters: int
+    status: Literal["accepted"] = "accepted"
+    total_chapters: int | None = None
     message: str
-
-
-class OutlineGenerateResponse(BaseModel):
-    outlines: List[OutlineResponse]
 
 
 class LocalizedWarningBase(BaseModel):
@@ -207,12 +272,6 @@ class ContinueDebugSummary(BaseModel):
 class ContinueResponse(BaseModel):
     continuations: List[ContinuationResponse]
     debug: ContinueDebugSummary
-
-
-class ErrorResponse(BaseModel):
-    detail: str
-
-
 # Lorebook Schemas
 
 class LoreEntryType(str, Enum):
@@ -287,17 +346,6 @@ class LoreInjectionResponse(BaseModel):
     context: str
     matched_entries: List[LoreMatchResult]
     total_tokens: int
-
-
-# Rollback Schemas
-
-class RollbackResponse(BaseModel):
-    """Response for rollback operation."""
-    novel_id: int
-    rolled_back_to_chapter: int
-    message: str
-
-
 # =============================================================================
 # Aggregation API Schemas (Frontend-friendly)
 # =============================================================================
@@ -676,6 +724,8 @@ class BootstrapResult(BaseModel):
     entities_found: int = 0
     relationships_found: int = 0
     index_refresh_only: bool = False
+    llm_blocking_wait_seconds: float = 0.0
+    llm_blocking_wait_count: int = 0
 
 
 class BootstrapJobResponse(BaseModel):

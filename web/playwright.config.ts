@@ -38,7 +38,7 @@ export const integrationConfig = defineConfig({
       reuseExistingServer: !process.env.CI,
     },
     {
-      command: 'cd .. && ./scripts/uv_run.sh uvicorn app.main:app --port 8000',
+      command: 'cd .. && ./scripts/run_playwright_integration_backend.sh',
       url: 'http://localhost:8000/api/health',
       reuseExistingServer: !process.env.CI,
     },

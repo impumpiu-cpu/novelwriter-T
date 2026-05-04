@@ -3,12 +3,9 @@
 
 from __future__ import annotations
 
-import math
-from collections import Counter, defaultdict
 from dataclasses import dataclass
-from itertools import combinations
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from app.language_policy import (
     DEFAULT_CJK_SPACE_RATIO_THRESHOLD,
@@ -17,23 +14,12 @@ from app.language_policy import (
     resolve_text_processing_language,
 )
 
-from .window_index import NovelIndex, WindowRef
-
 try:
-    import ahocorasick
-except ImportError:  # pragma: no cover - local fallback when dependency is missing
-    ahocorasick = None
-
-try:
-    import jieba
-except ImportError:  # pragma: no cover - local fallback when dependency is missing
-    jieba = None
+    import _novwr_state_proto
+except ImportError:  # pragma: no cover - local fallback when Rust build is missing
+    _novwr_state_proto = None
 
 
-DEFAULT_WINDOW_SIZE = 500
-DEFAULT_WINDOW_STEP = 250
-DEFAULT_MIN_WINDOW_COUNT = 3
-DEFAULT_MIN_WINDOW_RATIO = 0.005
 DEFAULT_COMMON_WORDS_DIR = "data/common_words"
 
 _COMMON_WORD_FILE_BY_LANGUAGE = {
@@ -82,9 +68,14 @@ class CharacterNgramTokenizer:
 
 class JiebaTokenizer:
     def tokenize(self, text: str) -> list[str]:
-        if jieba is None:
-            return CharacterNgramTokenizer(n=2).tokenize(text)
-        return [token for token in jieba.lcut(text) if token]
+        rust_tokenize = (
+            getattr(_novwr_state_proto, "tokenize_zh_text", None)
+            if _novwr_state_proto is not None
+            else None
+        )
+        if rust_tokenize is not None:
+            return [token for token in rust_tokenize(text) if token]
+        return CharacterNgramTokenizer(n=2).tokenize(text)
 
 
 def detect_language(
@@ -183,169 +174,6 @@ def load_common_words(
     return set(merged)
 
 
-def extract_candidates(
-    tokens: Sequence[str],
-    common_words: set[str],
-    *,
-    language: str | None = None,
-) -> dict[str, int]:
-    policy = get_language_policy(language)
-    counts: Counter[str] = Counter()
-    for token in tokens:
-        normalized = policy.normalize_token(token)
-        if len(normalized) < 2:
-            continue
-        match_key = policy.normalize_for_matching(normalized)
-        if normalized in common_words or match_key in common_words:
-            continue
-        counts[normalized] += 1
-    return dict(counts)
-
-
-def _window_offsets(text_length: int, window_size: int, window_step: int) -> list[int]:
-    if text_length <= 0:
-        return []
-    if text_length <= window_size:
-        return [0]
-
-    offsets = list(range(0, max(text_length - window_size + 1, 1), window_step))
-    last_start = text_length - window_size
-    if offsets and offsets[-1] != last_start:
-        offsets.append(last_start)
-    return offsets
-
-
-def _build_automaton(candidate_names: Sequence[str]):
-    if ahocorasick is None:
-        return None
-
-    automaton = ahocorasick.Automaton()
-    for name in candidate_names:
-        if name:
-            automaton.add_word(name, name)
-    automaton.make_automaton()
-    return automaton
-
-
-def _match_candidates_in_window(
-    window_text: str, candidate_names: Sequence[str], automaton
-) -> set[str]:
-    if not window_text:
-        return set()
-
-    if automaton is not None:
-        matches: set[str] = set()
-        for _, candidate in automaton.iter(window_text):
-            matches.add(candidate)
-        return matches
-
-    return {candidate for candidate in candidate_names if candidate in window_text}
-
-
-def build_window_index(
-    chapters: Sequence[ChapterText],
-    candidates: dict[str, int],
-    *,
-    window_size: int = DEFAULT_WINDOW_SIZE,
-    window_step: int = DEFAULT_WINDOW_STEP,
-    min_window_count: int = DEFAULT_MIN_WINDOW_COUNT,
-    min_window_ratio: float = DEFAULT_MIN_WINDOW_RATIO,
-    use_automaton: bool = True,
-) -> tuple[NovelIndex, dict[str, int]]:
-    if window_size <= 0 or window_step <= 0:
-        raise ValueError("Window size and step must be positive")
-    if min_window_count < 1:
-        raise ValueError("min_window_count must be >= 1")
-    if min_window_ratio < 0:
-        raise ValueError("min_window_ratio must be >= 0")
-
-    candidate_names = [name for name in candidates if name]
-    if not candidate_names or not chapters:
-        return NovelIndex(), {}
-
-    automaton = _build_automaton(candidate_names) if use_automaton else None
-
-    entity_windows_raw: dict[str, list[WindowRef]] = defaultdict(list)
-    window_entities_raw: dict[int, set[str]] = defaultdict(set)
-    importance_counter: Counter[str] = Counter()
-
-    total_windows = 0
-    window_id = 1
-
-    for chapter in chapters:
-        chapter_text = chapter.text or ""
-        if not chapter_text.strip():
-            continue
-        for start_pos in _window_offsets(len(chapter_text), window_size, window_step):
-            end_pos = min(start_pos + window_size, len(chapter_text))
-            window_text = chapter_text[start_pos:end_pos]
-            total_windows += 1
-
-            present_candidates = _match_candidates_in_window(
-                window_text, candidate_names, automaton
-            )
-            if not present_candidates:
-                window_id += 1
-                continue
-
-            entity_count = len(present_candidates)
-            for candidate in present_candidates:
-                ref = WindowRef(
-                    window_id=window_id,
-                    chapter_id=chapter.chapter_id,
-                    start_pos=start_pos,
-                    end_pos=end_pos,
-                    entity_count=entity_count,
-                )
-                entity_windows_raw[candidate].append(ref)
-                window_entities_raw[window_id].add(candidate)
-                importance_counter[candidate] += 1
-            window_id += 1
-
-    if total_windows == 0:
-        return NovelIndex(), {}
-
-    threshold = max(min_window_count, math.ceil(total_windows * min_window_ratio))
-
-    filtered_entity_windows: dict[str, list[WindowRef]] = {}
-    filtered_window_entities: dict[int, set[str]] = defaultdict(set)
-    filtered_importance: dict[str, int] = {}
-
-    for candidate, count in importance_counter.items():
-        if count < threshold:
-            continue
-        windows = sorted(
-            entity_windows_raw[candidate],
-            key=lambda ref: (-ref.entity_count, ref.window_id),
-        )
-        filtered_entity_windows[candidate] = windows
-        filtered_importance[candidate] = count
-        for window_ref in windows:
-            filtered_window_entities[window_ref.window_id].add(candidate)
-
-    return (
-        NovelIndex(
-            entity_windows=filtered_entity_windows,
-            window_entities=dict(filtered_window_entities),
-        ),
-        filtered_importance,
-    )
-
-
-def compute_cooccurrence(index: NovelIndex) -> list[tuple[str, str, int]]:
-    pair_counts: Counter[tuple[str, str]] = Counter()
-    for entities in index.window_entities.values():
-        if len(entities) < 2:
-            continue
-        for left, right in combinations(sorted(entities), 2):
-            pair_counts[(left, right)] += 1
-
-    return sorted(
-        [(left, right, count) for (left, right), count in pair_counts.items()],
-        key=lambda item: (-item[2], item[0], item[1]),
-    )
-
-
 __all__ = [
     "ChapterText",
     "Tokenizer",
@@ -356,7 +184,4 @@ __all__ = [
     "get_tokenizer",
     "tokenize_text",
     "load_common_words",
-    "extract_candidates",
-    "build_window_index",
-    "compute_cooccurrence",
 ]

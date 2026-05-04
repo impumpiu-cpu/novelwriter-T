@@ -53,6 +53,7 @@ class Novel(Base):
     lore_entries = relationship("LoreEntry", back_populates="novel", cascade="all, delete-orphan")
     bootstrap_job = relationship("BootstrapJob", back_populates="novel", uselist=False, cascade="all, delete-orphan")
     derived_asset_jobs = relationship("DerivedAssetJob", back_populates="novel", cascade="all, delete-orphan")
+    ingest_job = relationship("NovelIngestJob", back_populates="novel", uselist=False, cascade="all, delete-orphan")
 
 
 class Chapter(Base):
@@ -99,6 +100,72 @@ class Continuation(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     novel = relationship("Novel", back_populates="continuations")
+
+
+class ContinuationRun(Base):
+    """Durable idempotency record for a single continuation request attempt."""
+
+    __tablename__ = "continuation_runs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "novel_id", "client_request_id", name="uq_continuation_runs_user_novel_request"),
+        Index("ix_continuation_runs_novel_status", "novel_id", "status"),
+        Index(
+            "uq_continuation_runs_active_semantic",
+            "user_id",
+            "novel_id",
+            "semantic_key",
+            unique=True,
+            sqlite_where=text("semantic_key IS NOT NULL AND status = 'running'"),
+            postgresql_where=text("semantic_key IS NOT NULL AND status = 'running'"),
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    novel_id = Column(Integer, ForeignKey("novels.id"), nullable=False)
+    client_request_id = Column(String(64), nullable=False)
+    request_hash = Column(String(64), nullable=False)
+    semantic_key = Column(String(64), nullable=True)
+    claim_token = Column(String(64), nullable=False)
+    status = Column(String(20), nullable=False, default="running")
+    delivered_count = Column(Integer, nullable=False, default=0)
+    continuation_ids = Column(JSON, nullable=True)
+    debug_summary = Column(JSON, nullable=True)
+    error_code = Column(String(64), nullable=True)
+    error_message = Column(Text, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class WorldGenerationRun(Base):
+    """Durable admission row for world-generation requests."""
+
+    __tablename__ = "world_generation_runs"
+    __table_args__ = (
+        Index("ix_world_generation_runs_novel_status", "novel_id", "status"),
+        Index(
+            "uq_world_generation_runs_active_user_novel",
+            "user_id",
+            "novel_id",
+            unique=True,
+            sqlite_where=text("status = 'running'"),
+            postgresql_where=text("status = 'running'"),
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    novel_id = Column(Integer, ForeignKey("novels.id"), nullable=False)
+    request_hash = Column(String(64), nullable=False)
+    claim_token = Column(String(64), nullable=False)
+    status = Column(String(20), nullable=False, default="running")
+    response_payload = Column(JSON, nullable=True)
+    error_code = Column(String(64), nullable=True)
+    error_message = Column(Text, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class LoreEntry(Base):
@@ -357,6 +424,37 @@ class BootstrapJob(Base):
     novel = relationship("Novel", back_populates="bootstrap_job")
 
 
+class NovelIngestJob(Base):
+    __tablename__ = "novel_ingest_jobs"
+    __table_args__ = (
+        UniqueConstraint("novel_id", name="uq_novel_ingest_jobs_novel_id"),
+        Index("ix_novel_ingest_jobs_status_lease", "status", "lease_expires_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    novel_id = Column(Integer, ForeignKey("novels.id"), nullable=False)
+    status = Column(String(20), nullable=False, default="queued")
+    stage = Column(String(20), nullable=False, default="accepted")
+    size_tier = Column(String(20), nullable=True)
+    source_bytes = Column(Integer, nullable=False, default=0)
+    source_chars = Column(Integer, nullable=True)
+    chapter_count = Column(Integer, nullable=True)
+    requested_language = Column(String(50), nullable=True)
+    resolved_language = Column(String(50), nullable=True)
+    auto_index_plan = Column(String(20), nullable=True)
+    bootstrap_plan = Column(String(30), nullable=True)
+    readiness_mode = Column(String(30), nullable=True)
+    error = Column(Text, nullable=True)
+    lease_owner = Column(String(64), nullable=True)
+    lease_expires_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    novel = relationship("Novel", back_populates="ingest_job")
+
+
 class DerivedAssetJob(Base):
     __tablename__ = "derived_asset_jobs"
     __table_args__ = (
@@ -393,7 +491,7 @@ class UserEvent(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     event = Column(String(50), nullable=False)
     novel_id = Column(Integer, nullable=True)
     meta = Column(JSON, nullable=True)

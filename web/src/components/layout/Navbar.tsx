@@ -50,7 +50,7 @@ export function Navbar({
                         {!hideLinks ? (
                             <div className="hidden md:flex items-center gap-6 text-sm font-medium text-muted-foreground">
                                 {isLanding ? (
-                                    <a href="#features" className="hover:text-foreground transition-colors">{t('navbar.features')}</a>
+                                    <a href="#narrative" className="hover:text-foreground transition-colors">{t('navbar.features')}</a>
                                 ) : (
                                     <>
                                         <Link

@@ -30,8 +30,7 @@ import {
   copilotPillInteractiveClassName,
 } from './novelCopilotChrome'
 
-const sectionPanelClassName =
-  `${copilotPanelClassName} rounded-[24px] p-4`
+const sectionPanelClassName = 'py-1'
 const dashedPanelClassName =
   `${copilotPanelMutedClassName} rounded-[22px] border-dashed px-4 py-4 text-center text-sm text-muted-foreground`
 
@@ -130,6 +129,7 @@ function ActiveNovelCopilotDrawer({
   const [fallbackDrawerWidth, setFallbackDrawerWidth] = useState(DEFAULT_NOVEL_SHELL_DRAWER_WIDTH)
   const [isDragging, setIsDragging] = useState(false)
   const [retryingRunId, setRetryingRunId] = useState<string | null>(null)
+  const [applyingSuggestionKeys, setApplyingSuggestionKeys] = useState<Set<string>>(() => new Set())
   const setFallbackDrawerWidthClamped = useCallback((nextWidth: number) => {
     setFallbackDrawerWidth(clampNovelShellDrawerWidth(nextWidth))
   }, [])
@@ -139,6 +139,7 @@ function ActiveNovelCopilotDrawer({
   const startXRef = useRef(0)
   const startWidthRef = useRef(DEFAULT_NOVEL_SHELL_DRAWER_WIDTH)
   const drawerRef = useRef<HTMLDivElement>(null)
+  const applyingSuggestionKeysRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
@@ -224,6 +225,23 @@ function ActiveNovelCopilotDrawer({
     })
   }, [isFocusedSessionBusy, retryInterruptedRun, retryingRunId, session.sessionId])
 
+  const handleApplySuggestion = useCallback((runId: string, suggestionId: string) => {
+    const applyKey = `${session.sessionId}:${runId}:${suggestionId}`
+    if (isFocusedSessionBusy || applyingSuggestionKeysRef.current.has(applyKey)) return
+
+    const nextApplying = new Set(applyingSuggestionKeysRef.current)
+    nextApplying.add(applyKey)
+    applyingSuggestionKeysRef.current = nextApplying
+    setApplyingSuggestionKeys(nextApplying)
+
+    void applySuggestions(session.sessionId, runId, [suggestionId]).finally(() => {
+      const next = new Set(applyingSuggestionKeysRef.current)
+      next.delete(applyKey)
+      applyingSuggestionKeysRef.current = next
+      setApplyingSuggestionKeys(next)
+    })
+  }, [applySuggestions, isFocusedSessionBusy, session.sessionId])
+
   return (
     <>
       <div
@@ -244,11 +262,6 @@ function ActiveNovelCopilotDrawer({
         />
 
         <div className="absolute inset-0 bg-[var(--nw-copilot-shell-bg)]" />
-        <div className="pointer-events-none absolute inset-0 overflow-hidden [mix-blend-mode:var(--nw-copilot-glow-blend)] opacity-[var(--nw-copilot-glow-op)] z-0">
-          <div className="absolute -right-20 top-0 h-64 w-64 rounded-full bg-[radial-gradient(circle,var(--nw-copilot-glow-1),transparent_68%)]" />
-          <div className="absolute -left-16 bottom-0 h-56 w-56 rounded-full bg-[radial-gradient(circle,var(--nw-copilot-glow-2),transparent_74%)]" />
-          <div className="absolute inset-x-10 top-20 h-24 rounded-full bg-[radial-gradient(circle,var(--nw-copilot-glow-3),transparent_72%)] blur-2xl" />
-        </div>
 
         <div className="relative flex h-full flex-col">
           <div className="shrink-0 border-b border-[var(--nw-copilot-border)] bg-[linear-gradient(180deg,hsl(var(--background)/0.16),transparent)]">
@@ -306,8 +319,6 @@ function ActiveNovelCopilotDrawer({
             {sessionRuns.length === 0 && (
               <div className="animate-in space-y-3 fade-in duration-700">
                 <div className={cn('relative overflow-hidden rounded-[24px] px-4 py-4', copilotPanelStrongClassName)}>
-                  <div className="pointer-events-none absolute inset-x-0 top-0 h-14 bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-4),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)] opacity-[var(--nw-copilot-glow-op)]" />
-                  <div className="pointer-events-none absolute inset-y-0 right-0 w-24 bg-[radial-gradient(circle_at_right,var(--nw-copilot-glow-2),transparent_68%)] [mix-blend-mode:var(--nw-copilot-glow-blend)] opacity-[calc(var(--nw-copilot-glow-op)*0.8)]" />
                   <div className="relative flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground/70">
@@ -425,7 +436,8 @@ function ActiveNovelCopilotDrawer({
                               <NovelCopilotSuggestionCard
                                 key={s.suggestion_id}
                                 suggestion={s}
-                                onApply={(id) => void applySuggestions(session.sessionId, run.run_id, [id])}
+                                isApplying={applyingSuggestionKeys.has(`${session.sessionId}:${run.run_id}:${s.suggestion_id}`)}
+                                onApply={(id) => handleApplySuggestion(run.run_id, id)}
                                 onDismiss={(id) => void dismissSuggestions(session.sessionId, run.run_id, [id])}
                                 onLocateTarget={onLocateTarget}
                               />

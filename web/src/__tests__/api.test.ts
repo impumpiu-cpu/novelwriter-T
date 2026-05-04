@@ -1,10 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError, copilotApi, streamContinuation, worldApi } from '@/services/api'
+import { llmHeaders } from '@/services/apiClient'
 import { clearLlmConfig, setLlmConfig } from '@/lib/llmConfigStore'
 
 describe('api service', () => {
   beforeEach(() => {
+    vi.unstubAllEnvs()
+    vi.stubEnv('VITE_DEPLOY_MODE', 'selfhost')
     vi.restoreAllMocks()
+    clearLlmConfig()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
     clearLlmConfig()
   })
 
@@ -23,6 +31,63 @@ describe('api service', () => {
 
     await api.getNovel('special/id')
     expect(fetch).toHaveBeenCalledWith(expect.stringContaining('special%2Fid'), expect.any(Object))
+  })
+
+  it('getAuthOptions fetches public auth options', async () => {
+    const payload = {
+      deploy_mode: 'hosted',
+      invite_login_enabled: true,
+      github_login_enabled: false,
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload), { status: 200 }))
+
+    await expect(api.getAuthOptions()).resolves.toEqual(payload)
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/api/auth/options'), expect.any(Object))
+  })
+
+  it('activateInvite includes analytics payload when provided', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ access_token: 't', token_type: 'bearer' }), { status: 201 }))
+
+    await api.activateInvite('CODE', 'writer', 'password123!', {
+      anonymous_id: 'anon-1',
+      attribution: { channel: 'longkong', invite_batch: 'batch-a' },
+    })
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/auth/invite'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          invite_code: 'CODE',
+          nickname: 'writer',
+          password: 'password123!',
+          anonymous_id: 'anon-1',
+          attribution: { channel: 'longkong', invite_batch: 'batch-a' },
+        }),
+      }),
+    )
+  })
+
+  it('recordAnalyticsEvent posts hosted analytics payloads', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 202 }))
+
+    await expect(api.recordAnalyticsEvent({
+      event: 'invite_gate_view',
+      anonymous_id: 'anon-1',
+      meta: { channel: 'longkong' },
+    })).resolves.toEqual({ ok: true })
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/auth/events'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          event: 'invite_gate_view',
+          anonymous_id: 'anon-1',
+          meta: { channel: 'longkong' },
+        }),
+      }),
+    )
   })
 
   it('deleteNovel sends DELETE and handles 204', async () => {
@@ -127,10 +192,13 @@ describe('api service', () => {
   it('streamContinuation throws a clearer error on malformed NDJSON', async () => {
     const ndjson = '{"type":"start","variant":0,"total_variants":1}\n{not-json}\n'
     const encoder = new TextEncoder()
+    let cancelCalled = false
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(encoder.encode(ndjson))
-        controller.close()
+      },
+      cancel() {
+        cancelCalled = true
       },
     })
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream, { status: 200 }))
@@ -142,6 +210,7 @@ describe('api service', () => {
       }
     }
     await expect(consume()).rejects.toThrow(/Malformed NDJSON line:/)
+    expect(cancelCalled).toBe(true)
   })
 
   it('streamContinuation does not retry structured 503 domain errors and preserves error code', async () => {
@@ -191,7 +260,8 @@ describe('api service', () => {
     expect(headers2['X-LLM-Model']).toBeUndefined()
   })
 
-  it('attaches BYOK LLM headers to LLM endpoints only', async () => {
+  it('omits BYOK LLM headers on hosted LLM endpoints', async () => {
+    vi.stubEnv('VITE_DEPLOY_MODE', 'hosted')
     setLlmConfig({ baseUrl: 'http://example.com/v1', apiKey: 'sk-test', model: 'm' })
 
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
@@ -201,19 +271,47 @@ describe('api service', () => {
     await api.continueNovel(1, { num_versions: 1 })
     const init = fetchSpy.mock.calls[0][1]
     const headers = init.headers as Record<string, string>
-    expect(headers['X-LLM-Base-Url']).toBe('http://example.com/v1')
-    expect(headers['X-LLM-Api-Key']).toBe('sk-test')
-    expect(headers['X-LLM-Model']).toBe('m')
+    expect(headers['X-LLM-Base-Url']).toBeUndefined()
+    expect(headers['X-LLM-Api-Key']).toBeUndefined()
+    expect(headers['X-LLM-Model']).toBeUndefined()
 
     await api.testLlmConnection()
     const init2 = fetchSpy.mock.calls[1][1]
     const headers2 = init2.headers as Record<string, string>
-    expect(headers2['X-LLM-Base-Url']).toBe('http://example.com/v1')
-    expect(headers2['X-LLM-Api-Key']).toBe('sk-test')
-    expect(headers2['X-LLM-Model']).toBe('m')
+    expect(headers2['X-LLM-Base-Url']).toBeUndefined()
+    expect(headers2['X-LLM-Api-Key']).toBeUndefined()
+    expect(headers2['X-LLM-Model']).toBeUndefined()
   })
 
-  it('streamContinuation attaches BYOK LLM headers', async () => {
+  it('llmHeaders exposes BYOK config in selfhost mode', async () => {
+    vi.stubEnv('VITE_DEPLOY_MODE', 'selfhost')
+    clearLlmConfig()
+    setLlmConfig({ baseUrl: 'http://example.com/v1', apiKey: 'sk-test', model: 'm' })
+
+    const headers = llmHeaders() as Record<string, string>
+    expect(headers['X-LLM-Base-Url']).toBe('http://example.com/v1')
+    expect(headers['X-LLM-Api-Key']).toBe('sk-test')
+    expect(headers['X-LLM-Model']).toBe('m')
+  })
+
+  it('tags non-stream continuation fallback requests for backend analytics', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ continuations: [], debug: {} }), { status: 200 }),
+    )
+
+    await api.continueNovel(1, { num_versions: 1 }, {
+      deliveryMode: 'stream-fallback',
+      continuationRequestId: 'req-123',
+    })
+
+    const init = (fetch as unknown as { mock: { calls: Array<[string, RequestInit]> } }).mock.calls[0][1]
+    const headers = init.headers as Record<string, string>
+    expect(headers['X-Novwr-Delivery-Mode']).toBe('stream-fallback')
+    expect(headers['X-Novwr-Continuation-Request-ID']).toBe('req-123')
+  })
+
+  it('streamContinuation omits BYOK LLM headers in hosted mode', async () => {
+    vi.stubEnv('VITE_DEPLOY_MODE', 'hosted')
     setLlmConfig({ baseUrl: 'http://example.com/v1', apiKey: 'sk-test', model: 'm' })
 
     const ndjson = '{"type":"start","variant":0,"total_variants":1}\n{"type":"done","continuation_ids":[1]}\n'
@@ -228,19 +326,21 @@ describe('api service', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream, { status: 200 }))
 
     const events: Array<{ type: string }> = []
-    for await (const e of streamContinuation(1, { num_versions: 1 })) {
+    for await (const e of streamContinuation(1, { num_versions: 1 }, { continuationRequestId: 'req-456' })) {
       events.push(e)
     }
 
     expect(events.map(e => e.type)).toEqual(['start', 'done'])
     const init = (fetch as unknown as { mock: { calls: Array<[string, RequestInit]> } }).mock.calls[0][1]
     const headers = init.headers as Record<string, string>
-    expect(headers['X-LLM-Base-Url']).toBe('http://example.com/v1')
-    expect(headers['X-LLM-Api-Key']).toBe('sk-test')
-    expect(headers['X-LLM-Model']).toBe('m')
+    expect(headers['X-LLM-Base-Url']).toBeUndefined()
+    expect(headers['X-LLM-Api-Key']).toBeUndefined()
+    expect(headers['X-LLM-Model']).toBeUndefined()
+    expect(headers['X-Novwr-Continuation-Request-ID']).toBe('req-456')
   })
 
-  it('triggerBootstrap attaches BYOK LLM headers', async () => {
+  it('triggerBootstrap omits BYOK LLM headers in hosted mode', async () => {
+    vi.stubEnv('VITE_DEPLOY_MODE', 'hosted')
     setLlmConfig({ baseUrl: 'http://example.com/v1', apiKey: 'sk-test', model: 'm' })
 
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -262,9 +362,9 @@ describe('api service', () => {
 
     const init = (fetch as unknown as { mock: { calls: Array<[string, RequestInit]> } }).mock.calls[0][1]
     const headers = init.headers as Record<string, string>
-    expect(headers['X-LLM-Base-Url']).toBe('http://example.com/v1')
-    expect(headers['X-LLM-Api-Key']).toBe('sk-test')
-    expect(headers['X-LLM-Model']).toBe('m')
+    expect(headers['X-LLM-Base-Url']).toBeUndefined()
+    expect(headers['X-LLM-Api-Key']).toBeUndefined()
+    expect(headers['X-LLM-Model']).toBeUndefined()
   })
 
   it('sends cookies with authenticated requests', async () => {
@@ -276,7 +376,7 @@ describe('api service', () => {
     expect(init.credentials).toBe('include')
   })
 
-  it('canonicalizes legacy atlas session stages when opening copilot sessions', async () => {
+  it('requires canonical atlas tabs when opening copilot sessions', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -284,7 +384,7 @@ describe('api service', () => {
           signature: 'sig-1',
           mode: 'current_entity',
           scope: 'current_entity',
-          context: { entity_id: 101, surface: 'atlas', stage: 'entities', tab: 'entities' },
+          context: { entity_id: 101, surface: 'atlas', tab: 'entities' },
           interaction_locale: 'zh',
           display_title: '苏瑶',
           created: false,

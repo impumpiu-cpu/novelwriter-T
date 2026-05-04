@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
+import { AssistToggleButton } from '@/components/studio/AssistToggleButton'
 import { useQuery } from '@tanstack/react-query'
 import { GlassCard } from '@/components/GlassCard'
 import { AdvancedRow } from '@/components/workspace/AdvancedRow'
@@ -38,6 +39,8 @@ export function ContinuationSetupStage({
   temperature,
   onTemperatureChange,
   onGenerate,
+  assistOpen,
+  onToggleAssist,
 }: {
   novelId: number
   chapterNum: number
@@ -55,6 +58,8 @@ export function ContinuationSetupStage({
   temperature: string
   onTemperatureChange: (next: string) => void
   onGenerate: () => void
+  assistOpen?: boolean
+  onToggleAssist?: () => void
 }) {
   const { t } = useUiLocale()
   const { data: chapter, isLoading: chapterLoading } = useQuery({
@@ -74,9 +79,12 @@ export function ContinuationSetupStage({
               {t('continuation.setup.basedOn', { chapter: chapterReference ?? `Ch. ${chapterNum}` })}
             </span>
           </GlassCard>
-          <span className="text-sm text-muted-foreground">
-            {t('continuation.setup.charCount', { count: wordCount })}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">
+              {t('continuation.setup.charCount', { count: wordCount })}
+            </span>
+            {onToggleAssist ? <AssistToggleButton active={assistOpen} onClick={onToggleAssist} /> : null}
+          </div>
         </div>
 
         <GlassCard className="flex-1 overflow-auto rounded-xl p-6 sm:p-8 nw-scrollbar-thin">

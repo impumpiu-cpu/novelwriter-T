@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 from typing import Awaitable, Callable
 
@@ -14,20 +15,24 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings, get_settings
-from app.core.auth import decrement_quota
 from app.core.bootstrap import (
     BOOTSTRAP_MODE_INDEX_REFRESH,
     BOOTSTRAP_MODE_INITIAL,
     BOOTSTRAP_MODE_REEXTRACT,
+    build_bootstrap_trigger_result,
     BootstrapRunSummary,
     find_legacy_manual_draft_ambiguity,
     is_running_status,
     is_stale_running_job,
+    resolve_bootstrap_trigger_user_id,
     resolve_reextract_draft_policy,
     run_bootstrap_job,
 )
 from app.core.events import record_event
+from app.core.safety_fuses import ensure_ai_available
 from app.core.world.crud import load_novel
+from app.core.world.bootstrap_queue import is_window_index_ready
+from app.core.world.bootstrap_state import is_bootstrap_initialized
 from app.core.world.use_case_errors import WorldUseCaseError, detail_error_from_http_exception
 from app.models import BootstrapJob, Chapter, User
 from app.schemas import BootstrapDraftPolicy, BootstrapTriggerRequest
@@ -36,27 +41,16 @@ logger = logging.getLogger(__name__)
 _bootstrap_trigger_locks: dict[int, asyncio.Lock] = {}
 _bootstrap_trigger_locks_guard = asyncio.Lock()
 _LEGACY_REPAIR_SCRIPT = "scripts/fix_legacy_bootstrap_origin.py"
-
-def is_bootstrap_initialized(job: BootstrapJob | None) -> bool:
-    if job is None:
-        return False
-
-    if bool(getattr(job, "initialized", False)):
-        return True
-
-    result = job.result or {}
-    if bool(result.get("initialized", False)):
-        return True
-
-    if str(job.status) != "completed":
-        return False
-
-    if "index_refresh_only" in result:
-        return not bool(result.get("index_refresh_only"))
-
-    return True
+BOOTSTRAP_HOSTED_BYOK_DISABLED_CODE = "hosted_byok_disabled"
+BOOTSTRAP_HOSTED_BYOK_DISABLED_MESSAGE = "Hosted beta uses platform-managed AI credentials only."
 
 
+@dataclass(frozen=True, slots=True)
+class HostedBootstrapClaim:
+    job_id: int
+    novel_id: int
+    user_id: int | None
+    mode: str
 async def trigger_bootstrap(
     novel_id: int,
     *,
@@ -72,9 +66,22 @@ async def trigger_bootstrap(
     lock = await _get_bootstrap_trigger_lock(novel_id)
 
     async with lock:
-        load_novel(novel_id, db)
+        novel = load_novel(novel_id, db)
+        if resolved_settings.deploy_mode == "hosted" and _uses_request_scoped_byok(llm_config):
+            raise WorldUseCaseError(
+                code=BOOTSTRAP_HOSTED_BYOK_DISABLED_CODE,
+                message=BOOTSTRAP_HOSTED_BYOK_DISABLED_MESSAGE,
+                status_code=400,
+            )
         try:
-            decrement_quota(db, current_user, count=1)
+            ensure_ai_available(
+                db,
+                billing_source=(
+                    llm_config.get("billing_source_hint")
+                    if isinstance(llm_config, dict)
+                    else ("hosted" if resolved_settings.deploy_mode == "hosted" else None)
+                ),
+            )
         except HTTPException as exc:
             raise detail_error_from_http_exception(exc) from exc
 
@@ -129,6 +136,12 @@ async def trigger_bootstrap(
                 message="initial mode is only allowed before bootstrap initialization",
                 status_code=409,
             )
+        if mode == BOOTSTRAP_MODE_INDEX_REFRESH and is_window_index_ready(novel):
+            raise WorldUseCaseError(
+                code="bootstrap_index_already_fresh",
+                message="Whole-book retrieval is already fresh for this novel",
+                status_code=409,
+            )
 
         if not job:
             job = BootstrapJob(novel_id=novel_id)
@@ -139,9 +152,7 @@ async def trigger_bootstrap(
         job.status = "pending"
         job.progress = {"step": 0, "detail": "queued"}
         job.result = {
-            "entities_found": 0,
-            "relationships_found": 0,
-            "index_refresh_only": mode == BOOTSTRAP_MODE_INDEX_REFRESH,
+            **build_bootstrap_trigger_result(mode=mode, user_id=current_user.id),
         }
         job.error = None
 
@@ -164,14 +175,116 @@ async def trigger_bootstrap(
 
         db.refresh(job)
 
-        launcher(
-            db=db,
-            job_id=job.id,
-            user_id=current_user.id,
-            llm_config=llm_config,
-        )
+        if resolved_settings.deploy_mode == "hosted":
+            logger.info(
+                "bootstrap[%d]: queued for hosted worker novel=%d mode=%s",
+                job.id,
+                novel_id,
+                mode,
+            )
+        else:
+            launcher(
+                db=db,
+                job_id=job.id,
+                user_id=current_user.id,
+                llm_config=llm_config,
+            )
 
         return job
+
+
+def _uses_request_scoped_byok(llm_config: dict | None) -> bool:
+    if not isinstance(llm_config, dict):
+        return False
+    return llm_config.get("billing_source_hint") == "byok"
+
+
+def _claim_hosted_bootstrap_job(
+    *,
+    session_factory: Callable[[], Session],
+    settings: Settings,
+) -> HostedBootstrapClaim | None:
+    db = session_factory()
+    try:
+        jobs = (
+            db.query(BootstrapJob)
+            .order_by(BootstrapJob.updated_at.asc(), BootstrapJob.id.asc())
+            .all()
+        )
+        for job in jobs:
+            if job.status == "pending":
+                return HostedBootstrapClaim(
+                    job_id=job.id,
+                    novel_id=job.novel_id,
+                    user_id=resolve_bootstrap_trigger_user_id(job),
+                    mode=job.mode,
+                )
+            if not is_running_status(job.status):
+                continue
+            if not is_stale_running_job(
+                job,
+                stale_after_seconds=settings.bootstrap_stale_job_timeout_seconds,
+            ):
+                continue
+            logger.warning(
+                "Reclaiming stale hosted bootstrap job",
+                extra={"novel_id": job.novel_id, "job_id": job.id, "status": job.status},
+            )
+            job.status = "pending"
+            job.progress = {"step": 0, "detail": "queued"}
+            job.result = build_bootstrap_trigger_result(
+                mode=job.mode,
+                user_id=resolve_bootstrap_trigger_user_id(job),
+            )
+            job.error = None
+            db.commit()
+            return HostedBootstrapClaim(
+                job_id=job.id,
+                novel_id=job.novel_id,
+                user_id=resolve_bootstrap_trigger_user_id(job),
+                mode=job.mode,
+            )
+        return None
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def run_next_bootstrap_job(
+    *,
+    session_factory: Callable[[], Session],
+    settings: Settings | None = None,
+    background_job_runner: Callable[..., Awaitable[None]] | None = None,
+) -> bool:
+    resolved_settings = settings or get_settings()
+    if resolved_settings.deploy_mode != "hosted":
+        return False
+
+    claim = _claim_hosted_bootstrap_job(
+        session_factory=session_factory,
+        settings=resolved_settings,
+    )
+    if claim is None:
+        return False
+
+    logger.info(
+        "bootstrap[%d]: hosted worker picked queued job novel=%d mode=%s",
+        claim.job_id,
+        claim.novel_id,
+        claim.mode,
+    )
+    runner = background_job_runner or run_bootstrap_background_job
+    asyncio.run(
+        runner(
+            claim.job_id,
+            session_factory=session_factory,
+            user_id=claim.user_id,
+            llm_config=None,
+        )
+    )
+    return True
 
 
 def get_bootstrap_status(

@@ -3,8 +3,6 @@
 
 from app.models import CopilotRun, CopilotSession
 
-pytest_plugins = ("tests.copilot.test_runtime",)
-
 
 def test_run_poll_includes_non_actionable_reason(client, db, novel, entities):
     session = CopilotSession(

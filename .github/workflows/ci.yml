@@ -23,8 +23,14 @@ jobs:
           enable-cache: true
           cache-python: true
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Sync backend environment
-        run: ./scripts/setup_python_env.sh
+        run: ./scripts/setup_python_env.sh --skip-state-proto
+
+      - name: Build state-proto Rust extension
+        run: ./scripts/build_state_proto_rust.sh
 
       - name: Ruff
         run: ./scripts/uv_run.sh ruff check app tests scripts
@@ -62,7 +68,7 @@ jobs:
         run: npm run test:run
 
       - name: Bootstrap invariant gate (frontend)
-        run: npm run test:run -- src/__tests__/BootstrapPanel.invariants.test.tsx
+        run: npm run test:run -- src/__tests__/contracts/world/BootstrapPanel.invariants.test.tsx
 
       - name: Build
         run: npm run build
@@ -125,8 +131,14 @@ jobs:
           enable-cache: true
           cache-python: true
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Sync backend environment
-        run: ./scripts/setup_python_env.sh --no-dev
+        run: ./scripts/setup_python_env.sh --no-dev --skip-state-proto
+
+      - name: Build state-proto Rust extension
+        run: ./scripts/build_state_proto_rust.sh
 
       - name: Set up Node
         uses: actions/setup-node@v4

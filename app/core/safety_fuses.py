@@ -9,12 +9,12 @@ from contextlib import contextmanager
 import logging
 import os
 
-from fastapi import Depends, HTTPException
+from fastapi import HTTPException
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.database import get_db, SessionLocal
+from app.database import SessionLocal
 from app.models import TokenUsage, User
 
 logger = logging.getLogger(__name__)
@@ -67,10 +67,11 @@ def hosted_signup_lock(db: Session):
     """Serialize hosted invite signups across processes and threads.
 
     SQLite uses ``BEGIN IMMEDIATE`` to acquire the database write lock before
-    counting active users. PostgreSQL uses a transaction-scoped advisory lock.
+    mutating hosted auth admission state. PostgreSQL uses a transaction-scoped
+    advisory lock.
     """
     settings = get_settings()
-    if settings.deploy_mode != "hosted" or int(settings.hosted_max_users or 0) <= 0:
+    if settings.deploy_mode != "hosted":
         yield
         return
 
@@ -164,11 +165,6 @@ def ensure_ai_available(db: Session, *, billing_source: str | None = None) -> No
         detail=detail,
         headers={"Retry-After": "300"},
     )
-
-
-def check_ai_available(db: Session = Depends(get_db)) -> None:
-    ensure_ai_available(db)
-
 
 def ensure_ai_available_fresh_session(*, billing_source: str | None = None) -> None:
     """Out-of-band guard for background tasks and shared AI clients."""

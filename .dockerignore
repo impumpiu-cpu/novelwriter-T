@@ -16,7 +16,7 @@ data/*
 .pytest_cache/
 .mypy_cache/
 *.egg-info/
-.trellis/
+.nov_wr-context/
 tests/
 uploads/
 Sync/

@@ -518,6 +518,7 @@
 以来
 以上
 以下
+
 以往
 其中
 其上
@@ -1884,3 +1885,56 @@
 故事
 没有问题
 不对
+
+# ===== state-proto target discovery 噪声短语 =====
+等待
+他的
+你还
+我还
+足以
+他就
+前往
+早就
+就这
+
+# ===== bootstrap shortlist hard-drop：高置信叙事/口水噪声 =====
+可不
+特么
+尼玛
+一看
+赶紧
+取出
+拿出
+打算
+跟着
+听说
+肯定
+这会儿
+手里
+家里
+晚上
+打开
+
+# ===== bootstrap shortlist hard-drop：外部停用词表补充的低风险叙事短语 =====
+# sources:
+# - stopwords-iso/stopwords-zh
+# - shihanmax/Stopwords (SCU/common)
+要不
+只怕
+怎么办
+怎么样
+话说
+谁知
+着呢
+不得了
+不得已
+那会儿
+二话不说
+二话没说
+不经意
+急匆匆
+暗地里
+有时
+其它
+尽量
+大约

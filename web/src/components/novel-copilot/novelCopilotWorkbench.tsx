@@ -18,7 +18,6 @@ export interface CopilotQuickActionSpec {
   prompt: string
   icon: LucideIcon
   iconClassName: string
-  glowClassName: string
   layoutClassName?: string
 }
 
@@ -43,7 +42,6 @@ function wholeBookActions(locale: UiLocale): CopilotQuickActionSpec[] {
       prompt: t(locale, 'copilot.workbench.wholeBook.scanGaps.prompt'),
       icon: Search,
       iconClassName: 'bg-[hsl(var(--accent)/0.12)] text-accent-foreground ring-1 ring-[hsl(var(--accent)/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-1),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
       layoutClassName: 'sm:col-span-2',
     },
     {
@@ -53,7 +51,6 @@ function wholeBookActions(locale: UiLocale): CopilotQuickActionSpec[] {
       prompt: t(locale, 'copilot.workbench.wholeBook.traceSignals.prompt'),
       icon: Sparkles,
       iconClassName: 'bg-[hsl(270_80%_65%/0.10)] text-[hsl(270_80%_65%)] ring-1 ring-[hsl(270_80%_65%/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-2),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
     },
     {
       id: 'find_world_conflicts',
@@ -62,7 +59,6 @@ function wholeBookActions(locale: UiLocale): CopilotQuickActionSpec[] {
       prompt: t(locale, 'copilot.workbench.wholeBook.findConflicts.prompt'),
       icon: FileSearch,
       iconClassName: 'bg-[hsl(220_90%_65%/0.10)] text-[hsl(220_90%_65%)] ring-1 ring-[hsl(220_90%_65%/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-3),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
     },
   ]
 }
@@ -76,7 +72,6 @@ function currentEntityActions(locale: UiLocale, subject: string): CopilotQuickAc
       prompt: t(locale, 'copilot.workbench.entity.complete.prompt', { subject }),
       icon: Sparkles,
       iconClassName: 'bg-[hsl(var(--accent)/0.12)] text-accent-foreground ring-1 ring-[hsl(var(--accent)/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-1),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
       layoutClassName: 'sm:col-span-2',
     },
     {
@@ -86,7 +81,6 @@ function currentEntityActions(locale: UiLocale, subject: string): CopilotQuickAc
       prompt: t(locale, 'copilot.workbench.entity.findRelations.prompt', { subject }),
       icon: Link2,
       iconClassName: 'bg-[hsl(270_80%_65%/0.10)] text-[hsl(270_80%_65%)] ring-1 ring-[hsl(270_80%_65%/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-2),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
     },
     {
       id: 'collect_entity_evidence',
@@ -95,7 +89,6 @@ function currentEntityActions(locale: UiLocale, subject: string): CopilotQuickAc
       prompt: t(locale, 'copilot.workbench.entity.collectEvidence.prompt', { subject }),
       icon: FileSearch,
       iconClassName: 'bg-[hsl(220_90%_65%/0.10)] text-[hsl(220_90%_65%)] ring-1 ring-[hsl(220_90%_65%/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-3),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
     },
   ]
 }
@@ -109,7 +102,6 @@ function relationshipActions(locale: UiLocale, subject: string): CopilotQuickAct
       prompt: t(locale, 'copilot.workbench.relationships.find.prompt', { subject }),
       icon: Link2,
       iconClassName: 'bg-[hsl(var(--accent)/0.12)] text-accent-foreground ring-1 ring-[hsl(var(--accent)/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-1),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
       layoutClassName: 'sm:col-span-2',
     },
     {
@@ -119,7 +111,6 @@ function relationshipActions(locale: UiLocale, subject: string): CopilotQuickAct
       prompt: t(locale, 'copilot.workbench.relationships.labeling.prompt', { subject }),
       icon: Sparkles,
       iconClassName: 'bg-[hsl(270_80%_65%/0.10)] text-[hsl(270_80%_65%)] ring-1 ring-[hsl(270_80%_65%/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-2),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
     },
     {
       id: 'collect_interactions',
@@ -128,7 +119,6 @@ function relationshipActions(locale: UiLocale, subject: string): CopilotQuickAct
       prompt: t(locale, 'copilot.workbench.relationships.collect.prompt', { subject }),
       icon: FileSearch,
       iconClassName: 'bg-[hsl(220_90%_65%/0.10)] text-[hsl(220_90%_65%)] ring-1 ring-[hsl(220_90%_65%/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-3),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
     },
   ]
 }
@@ -142,7 +132,6 @@ function draftCleanupActions(locale: UiLocale): CopilotQuickActionSpec[] {
       prompt: t(locale, 'copilot.workbench.draft.review.prompt'),
       icon: FileText,
       iconClassName: 'bg-[hsl(var(--accent)/0.12)] text-accent-foreground ring-1 ring-[hsl(var(--accent)/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-1),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
       layoutClassName: 'sm:col-span-2',
     },
     {
@@ -152,7 +141,6 @@ function draftCleanupActions(locale: UiLocale): CopilotQuickActionSpec[] {
       prompt: t(locale, 'copilot.workbench.draft.normalize.prompt'),
       icon: Sparkles,
       iconClassName: 'bg-[hsl(270_80%_65%/0.10)] text-[hsl(270_80%_65%)] ring-1 ring-[hsl(270_80%_65%/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-2),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
     },
     {
       id: 'fill_missing_fields',
@@ -161,7 +149,6 @@ function draftCleanupActions(locale: UiLocale): CopilotQuickActionSpec[] {
       prompt: t(locale, 'copilot.workbench.draft.fill.prompt'),
       icon: FileSearch,
       iconClassName: 'bg-[hsl(220_90%_65%/0.10)] text-[hsl(220_90%_65%)] ring-1 ring-[hsl(220_90%_65%/0.20)]',
-      glowClassName: 'bg-[radial-gradient(circle_at_top_left,var(--nw-copilot-glow-3),transparent_62%)] [mix-blend-mode:var(--nw-copilot-glow-blend)]',
     },
   ]
 }

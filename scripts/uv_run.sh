@@ -21,6 +21,20 @@ if [[ "$#" -eq 0 ]]; then
   exit 2
 fi
 
+should_ensure_state_proto() {
+  case "$1" in
+    python|pytest|uvicorn)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 cd "$ROOT_DIR"
 export UV_PROJECT_ENVIRONMENT="$VENV_DIR"
+if [[ "${NOVWR_SKIP_STATE_PROTO_ENSURE:-0}" != "1" ]] && should_ensure_state_proto "$1"; then
+  "$ROOT_DIR/scripts/ensure_state_proto_extension.sh" --quiet
+fi
 exec uv run --project "$ROOT_DIR" --python "$PY_BIN" --frozen "$@"

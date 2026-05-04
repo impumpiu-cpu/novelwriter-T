@@ -83,6 +83,7 @@ export const copilotZhMessages = {
   'copilot.suggestion.locate': '查看目标',
   'copilot.suggestion.dismiss': '忽略',
   'copilot.suggestion.apply': '采纳',
+  'copilot.suggestion.applying': '采纳中',
   'copilot.suggestion.notActionable': '当前不能直接采纳',
 
   'copilot.research.chapterLabel': ({ chapter }) => `第${String(chapter ?? '')}章`,
@@ -120,8 +121,8 @@ export const copilotZhMessages = {
   'copilot.card.triggerCompactDescription': '全书探索与上下文研究',
   'copilot.card.triggerDescription': '跨章节研究世界状态、设定缺口与潜在线索',
   'copilot.card.batchOps': '批量生成与初始化',
-  'copilot.card.generateFromSettings': '从设定生成',
-  'copilot.card.generateFromSettingsLong': '从设定文本生成 (大段输入)',
+  'copilot.card.generateFromSettings': '从设定生成草稿',
+  'copilot.card.generateFromSettingsLong': '从设定文本生成草稿',
 
   'copilot.workbench.wholeBook.eyebrow': '研究工作台',
   'copilot.workbench.wholeBook.title': '从全书视角检索世界状态、设定缺口与潜在线索。',
@@ -283,6 +284,7 @@ export const copilotEnMessages = {
   'copilot.suggestion.locate': 'Locate target',
   'copilot.suggestion.dismiss': 'Dismiss',
   'copilot.suggestion.apply': 'Apply',
+  'copilot.suggestion.applying': 'Applying',
   'copilot.suggestion.notActionable': 'This suggestion cannot be applied directly right now',
 
   'copilot.research.chapterLabel': ({ chapter }) => `Chapter ${String(chapter ?? '')}`,
@@ -320,8 +322,8 @@ export const copilotEnMessages = {
   'copilot.card.triggerCompactDescription': 'Whole-book exploration and context research',
   'copilot.card.triggerDescription': 'Research world state, model gaps, and clues across chapters',
   'copilot.card.batchOps': 'Batch generation and initialization',
-  'copilot.card.generateFromSettings': 'Generate from setting notes',
-  'copilot.card.generateFromSettingsLong': 'Generate from setting notes (long-form input)',
+  'copilot.card.generateFromSettings': 'Generate drafts from notes',
+  'copilot.card.generateFromSettingsLong': 'Generate drafts from setting notes',
 
   'copilot.workbench.wholeBook.eyebrow': 'Research workbench',
   'copilot.workbench.wholeBook.title': 'Search world state, model gaps, and recurring clues from a whole-book perspective.',

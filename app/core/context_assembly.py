@@ -5,7 +5,7 @@
 Context Assembly — visibility-driven prompt injection for WorldModel.
 
 Implements the "Prompt Assembly Visibility Contract" from:
-  .trellis/spec/backend/context-assembly.md
+  /mnt/d/nov_wr-context/spec/backend/context-assembly.md
 
 Primary callers:
 - /api/novels/{novel_id}/continue (writer context)

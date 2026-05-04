@@ -48,6 +48,25 @@ import { copilotApi } from './copilotApi'
 const listNovels = () => request<Novel[]>('/api/novels')
 const listChapters = (novelId: number) => request<Chapter[]>(`/api/novels/${novelId}/chapters`)
 const UPLOAD_CONSENT_VERSION = '2026-03-06'
+export const buildContinuationRequestId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `continue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+export interface AuthOptions {
+  deploy_mode: 'hosted' | 'selfhost'
+  invite_login_enabled: boolean
+  github_login_enabled: boolean
+}
+
+export interface AnalyticsEventRequest {
+  event: string
+  anonymous_id?: string
+  novel_id?: number
+  meta?: Record<string, string | number | boolean | null>
+}
 
 export const api = {
   login: async (username: string, password: string) => {
@@ -62,16 +81,37 @@ export const api = {
     return res.json() as Promise<{ access_token: string; token_type: string }>
   },
 
-  inviteRegister: async (invite_code: string, nickname: string) => {
+  activateInvite: async (
+    invite_code: string,
+    nickname: string,
+    password: string,
+    opts?: {
+      anonymous_id?: string
+      attribution?: Record<string, string | number | boolean | null>
+    },
+  ) => {
     const res = await fetch(`${BASE_URL}/api/auth/invite`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ invite_code, nickname }),
+      body: JSON.stringify({
+        invite_code,
+        nickname,
+        password,
+        anonymous_id: opts?.anonymous_id,
+        attribution: opts?.attribution ?? {},
+      }),
     })
     if (!res.ok) await throwApiError(res)
     return res.json() as Promise<{ access_token: string; token_type: string }>
   },
+
+  getAuthOptions: () => request<AuthOptions>('/api/auth/options'),
+  recordAnalyticsEvent: (payload: AnalyticsEventRequest) =>
+    request<{ ok: boolean }>('/api/auth/events', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   getGitHubLoginUrl: (redirectTo: string) => {
     const params = new URLSearchParams()
@@ -107,11 +147,21 @@ export const api = {
   getNovel: (id: number | string) => request<Novel>(`/api/novels/${encodeURIComponent(String(id))}`),
   deleteNovel: (id: number) =>
     request<void>(`/api/novels/${id}`, { method: 'DELETE' }),
-  uploadNovel: async (file: File, title: string, author = '') => {
+  uploadNovel: async (
+    file: File,
+    title: string,
+    author = '',
+    opts?: {
+      sourceSurface?: string
+    },
+  ) => {
     const form = new FormData()
     form.append('file', file)
     form.append('title', title)
     form.append('author', author)
+    if (opts?.sourceSurface) {
+      form.append('source_surface', opts.sourceSurface)
+    }
     form.append('consent_acknowledged', 'true')
     form.append('consent_version', UPLOAD_CONSENT_VERSION)
     const res = await fetch(`${BASE_URL}/api/novels/upload`, {
@@ -120,7 +170,7 @@ export const api = {
       body: form,
     })
     if (!res.ok) await throwApiError(res)
-    return res.json() as Promise<{ novel_id: number; total_chapters: number }>
+    return res.json() as Promise<{ novel_id: number; status: 'accepted'; total_chapters: number | null; message: string }>
   },
 
   listChaptersMeta: (novelId: number) =>
@@ -142,10 +192,22 @@ export const api = {
   deleteChapter: (novelId: number, num: number) =>
     request<void>(`/api/novels/${novelId}/chapters/${num}`, { method: 'DELETE' }),
 
-  continueNovel: (novelId: number, data: ContinueRequest) =>
+  continueNovel: (
+    novelId: number,
+    data: ContinueRequest,
+    opts?: { deliveryMode?: 'sync' | 'stream-fallback'; continuationRequestId?: string },
+  ) =>
     request<ContinueResponse>(`/api/novels/${novelId}/continue`, {
       method: 'POST',
-      headers: llmHeaders(),
+      headers: {
+        ...llmHeaders(),
+        ...(opts?.continuationRequestId
+          ? { 'X-Novwr-Continuation-Request-ID': opts.continuationRequestId }
+          : {}),
+        ...(opts?.deliveryMode === 'stream-fallback'
+          ? { 'X-Novwr-Delivery-Mode': 'stream-fallback' }
+          : {}),
+      },
       body: JSON.stringify(data),
     }),
 
@@ -166,7 +228,7 @@ export const api = {
 export async function* streamContinuation(
   novelId: number,
   data: ContinueRequest,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; continuationRequestId?: string },
 ): AsyncGenerator<StreamEvent> {
   const maxRetries = 2
   let resp: Response | null = null
@@ -177,6 +239,9 @@ export async function* streamContinuation(
       headers: {
         'Content-Type': 'application/json',
         ...llmHeaders(),
+        ...(opts?.continuationRequestId
+          ? { 'X-Novwr-Continuation-Request-ID': opts.continuationRequestId }
+          : {}),
       },
       body: JSON.stringify(data),
       signal: opts?.signal,
@@ -199,6 +264,7 @@ export async function* streamContinuation(
   const reader = resp!.body!.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let streamCompleted = false
   const parseLine = (line: string): StreamEvent => {
     try {
       return JSON.parse(line) as StreamEvent
@@ -207,18 +273,31 @@ export async function* streamContinuation(
       throw new Error(`Malformed NDJSON line: ${preview}`)
     }
   }
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop()!
-    for (const line of lines) {
-      if (line.trim()) yield parseLine(line)
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()!
+      for (const line of lines) {
+        if (line.trim()) yield parseLine(line)
+      }
     }
+    const tail = buffer.trim()
+    if (tail) yield parseLine(tail)
+    streamCompleted = true
+  } finally {
+    if (!streamCompleted) {
+      try {
+        await reader.cancel()
+      } catch {
+        // Best-effort: the caller is already handling the transport failure.
+      }
+    }
+    reader.releaseLock()
   }
-  const tail = buffer.trim()
-  if (tail) yield parseLine(tail)
 }
 
 export { ApiError, copilotApi, llmHeaders }

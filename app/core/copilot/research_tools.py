@@ -13,6 +13,11 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.copilot.tool_contract import (
+    ResearchToolCatalog,
+    ResearchToolSpec,
+    ToolRuntimeMetadata,
+)
 from app.core.indexing import WINDOW_INDEX_STATUS_FRESH
 from app.core.copilot.messages import CopilotTextKey, get_copilot_text
 from app.core.copilot.scope import ScopeSnapshot
@@ -23,6 +28,9 @@ from app.models import Chapter, Novel, WorldEntity, WorldRelationship, WorldSyst
 logger = logging.getLogger(__name__)
 
 MAX_EVIDENCE_PACKS = 12
+MAX_OPEN_MANY_PACKS = 3
+DEFAULT_OPEN_MANY_EXPAND_CHARS = 1200
+MAX_OPEN_MANY_EXPAND_CHARS = 2000
 _QUERY_TERM_SPLIT_RE = re.compile(r"[\s,，、；;|/]+")
 
 
@@ -44,24 +52,34 @@ def _append_tool_labeled_line(
     label = _tool_text(interaction_locale, label_key)
     return f"{text}\n{label}: {value}"
 
-_TOOL_SCHEMAS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "load_scope_snapshot",
-            "description": "Re-load world-model state: entities, relationships, systems, drafts. Use when you need a fresh view.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "find",
-            "description": "Research query. Returns evidence packs with stable IDs for progressive disclosure.",
-            "parameters": {
+RESEARCH_TOOL_CATALOG = ResearchToolCatalog(
+    specs=(
+        ResearchToolSpec(
+            name="load_scope_snapshot",
+            description=(
+                "Re-load world-model state: entities, relationships, systems, drafts. "
+                "Use when you need a fresh view."
+            ),
+            parameters_schema={"type": "object", "properties": {}, "required": []},
+            runtime=ToolRuntimeMetadata(
+                execution_path="runtime",
+                snapshot_policy="refresh_scope",
+                fresh_snapshot_sensitive=True,
+            ),
+        ),
+        ResearchToolSpec(
+            name="find",
+            description=(
+                "Research query. Returns evidence packs with stable IDs for "
+                "progressive disclosure."
+            ),
+            parameters_schema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Free-text research query"},
+                    "query": {
+                        "type": "string",
+                        "description": "Free-text research query",
+                    },
                     "scope": {
                         "type": "string",
                         "enum": ["story_text", "world_rows", "drafts", "all"],
@@ -70,29 +88,74 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "required": ["query"],
             },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "open",
-            "description": "Expand a previously-found evidence pack to see full content.",
-            "parameters": {
+            runtime=ToolRuntimeMetadata(
+                snapshot_policy="snapshot_bound",
+                fresh_snapshot_sensitive=True,
+                auto_follow_up_hint="open_first_chapter_pack",
+            ),
+        ),
+        ResearchToolSpec(
+            name="open",
+            description="Expand a previously-found evidence pack to see full content.",
+            parameters_schema={
                 "type": "object",
                 "properties": {
-                    "pack_id": {"type": "string", "description": "Pack ID from a find result"},
-                    "expand_chars": {"type": "integer", "description": "Max chars to expand (default 2000)"},
+                    "pack_id": {
+                        "type": "string",
+                        "description": "Pack ID from a find result",
+                    },
+                    "expand_chars": {
+                        "type": "integer",
+                        "description": "Max chars to expand (default 2000)",
+                    },
                 },
                 "required": ["pack_id"],
             },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read",
-            "description": "Read live world state for specific targets (entities, relationships, systems).",
-            "parameters": {
+            runtime=ToolRuntimeMetadata(
+                snapshot_policy="workspace_memory",
+                fresh_snapshot_sensitive=False,
+            ),
+        ),
+        ResearchToolSpec(
+            name="open_many",
+            description=(
+                "Expand multiple previously-found evidence packs in one call. "
+                "Use when you need several independent evidence reads, especially "
+                "chapter packs."
+            ),
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "pack_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Pack IDs from find results. Prefer 2-3 packs that are "
+                            "independent and worth comparing."
+                        ),
+                    },
+                    "expand_chars": {
+                        "type": "integer",
+                        "description": (
+                            "Max chars to expand per pack (default 1200, capped lower "
+                            "than open() to control prompt growth)"
+                        ),
+                    },
+                },
+                "required": ["pack_ids"],
+            },
+            runtime=ToolRuntimeMetadata(
+                snapshot_policy="workspace_memory",
+                fresh_snapshot_sensitive=False,
+            ),
+        ),
+        ResearchToolSpec(
+            name="read",
+            description=(
+                "Read live world state for specific targets "
+                "(entities, relationships, systems)."
+            ),
+            parameters_schema={
                 "type": "object",
                 "properties": {
                     "target_refs": {
@@ -100,7 +163,10 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "items": {
                             "type": "object",
                             "properties": {
-                                "type": {"type": "string", "enum": ["entity", "relationship", "system"]},
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["entity", "relationship", "system"],
+                                },
                                 "id": {"type": "integer"},
                             },
                             "required": ["type", "id"],
@@ -110,9 +176,17 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "required": ["target_refs"],
             },
-        },
-    },
-]
+            runtime=ToolRuntimeMetadata(
+                snapshot_policy="live_read",
+                fresh_snapshot_sensitive=True,
+            ),
+        ),
+    )
+)
+
+
+def get_research_tool_spec(tool_name: str) -> ResearchToolSpec | None:
+    return RESEARCH_TOOL_CATALOG.get(tool_name)
 
 
 def dispatch_tool(
@@ -125,6 +199,18 @@ def dispatch_tool(
     interaction_locale: str = "zh",
 ) -> str:
     """Dispatch a single research tool call."""
+    tool_spec = get_research_tool_spec(tool_name)
+    if tool_spec is None or tool_spec.runtime.execution_path != "dispatch":
+        return json.dumps(
+            {
+                "error": _tool_text(
+                    interaction_locale,
+                    CopilotTextKey.TOOL_UNKNOWN_TOOL,
+                    tool_name=tool_name,
+                ),
+            },
+            ensure_ascii=False,
+        )
     if tool_name == "find":
         return _tool_find(
             tool_args.get("query", ""),
@@ -140,6 +226,15 @@ def dispatch_tool(
         return _tool_open(
             tool_args.get("pack_id", ""),
             tool_args.get("expand_chars", 2000),
+            db,
+            snapshot.novel,
+            workspace,
+            interaction_locale,
+        )
+    if tool_name == "open_many":
+        return _tool_open_many(
+            tool_args.get("pack_ids", []),
+            tool_args.get("expand_chars", DEFAULT_OPEN_MANY_EXPAND_CHARS),
             db,
             snapshot.novel,
             workspace,
@@ -637,36 +732,227 @@ def _tool_open(
     workspace: Workspace,
     interaction_locale: str = "zh",
 ) -> str:
-    pack = workspace.evidence_packs.get(pack_id)
-    if not pack:
+    result, found = _expand_pack_result(
+        pack_id=pack_id,
+        expand_chars=expand_chars,
+        workspace=workspace,
+        interaction_locale=interaction_locale,
+        chapters_by_id=None,
+        db=db,
+    )
+    if not found:
+        return json.dumps({"error": result["error"]}, ensure_ascii=False)
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _tool_open_many(
+    pack_ids: list[Any],
+    expand_chars: int,
+    db: Session,
+    _novel: Novel,
+    workspace: Workspace,
+    interaction_locale: str = "zh",
+) -> str:
+    normalized_pack_ids, overflow_pack_ids = _normalize_pack_ids(pack_ids)
+    requested_count = len(normalized_pack_ids) + len(overflow_pack_ids)
+    if overflow_pack_ids:
         return json.dumps(
             {
+                "error": _tool_text(
+                    interaction_locale,
+                    CopilotTextKey.TOOL_OPEN_MANY_TOO_MANY_PACKS,
+                    max_count=MAX_OPEN_MANY_PACKS,
+                ),
+                "results": [],
+                "opened_count": 0,
+                "requested_count": requested_count,
+                "max_pack_ids": MAX_OPEN_MANY_PACKS,
+            },
+            ensure_ascii=False,
+        )
+    if not normalized_pack_ids:
+        return json.dumps(
+            {
+                "error": _tool_text(
+                    interaction_locale,
+                    CopilotTextKey.TOOL_OPEN_MANY_NO_PACKS,
+                ),
+                "results": [],
+                "opened_count": 0,
+                "requested_count": 0,
+            },
+            ensure_ascii=False,
+        )
+
+    expand_chars = min(
+        expand_chars or DEFAULT_OPEN_MANY_EXPAND_CHARS,
+        MAX_OPEN_MANY_EXPAND_CHARS,
+    )
+
+    chapter_ids = _collect_chapter_ids_for_packs(normalized_pack_ids, workspace)
+    chapters_by_id: dict[int, Chapter] | None = None
+    if chapter_ids:
+        chapters_by_id = {
+            chapter.id: chapter
+            for chapter in (
+                db.query(Chapter).filter(Chapter.id.in_(chapter_ids)).all()
+            )
+        }
+
+    results: list[dict[str, Any]] = []
+    opened_count = 0
+    for pack_id in normalized_pack_ids:
+        result, found = _expand_pack_result(
+            pack_id=pack_id,
+            expand_chars=expand_chars,
+            workspace=workspace,
+            interaction_locale=interaction_locale,
+            chapters_by_id=chapters_by_id,
+            db=db,
+        )
+        if found:
+            opened_count += 1
+        results.append(result)
+
+    failed_results = [
+        result
+        for result in results
+        if isinstance(result.get("error"), str) and result["error"].strip()
+    ]
+    response: dict[str, Any] = {
+        "results": results,
+        "opened_count": opened_count,
+        "requested_count": len(normalized_pack_ids),
+    }
+    if failed_results:
+        response["error"] = _tool_text(
+            interaction_locale,
+            CopilotTextKey.TOOL_OPEN_MANY_FAILED_COUNT,
+            failed_count=len(failed_results),
+            requested_count=len(normalized_pack_ids),
+        )
+        response["failed_count"] = len(failed_results)
+        response["failed_pack_ids"] = [
+            str(result.get("pack_id") or "")
+            for result in failed_results
+            if str(result.get("pack_id") or "")
+        ]
+
+    return json.dumps(
+        response,
+        ensure_ascii=False,
+    )
+
+
+def _normalize_pack_ids(pack_ids: list[Any] | Any) -> tuple[list[str], list[str]]:
+    if not isinstance(pack_ids, list):
+        pack_ids = [pack_ids]
+
+    normalized: list[str] = []
+    overflow: list[str] = []
+    seen: set[str] = set()
+    for raw in pack_ids:
+        pack_id = str(raw or "").strip()
+        if not pack_id or pack_id in seen:
+            continue
+        seen.add(pack_id)
+        if len(normalized) >= MAX_OPEN_MANY_PACKS:
+            overflow.append(pack_id)
+            continue
+        normalized.append(pack_id)
+    return normalized, overflow
+
+
+def _collect_chapter_ids_for_packs(
+    pack_ids: list[str],
+    workspace: Workspace,
+) -> list[int]:
+    chapter_ids: list[int] = []
+    seen: set[int] = set()
+    for pack_id in pack_ids:
+        pack = workspace.evidence_packs.get(pack_id)
+        if not pack:
+            continue
+        for ref in pack.source_refs:
+            chapter_id = ref.get("chapter_id")
+            if ref.get("type") != "chapter" or not isinstance(chapter_id, int):
+                continue
+            if chapter_id in seen:
+                continue
+            seen.add(chapter_id)
+            chapter_ids.append(chapter_id)
+    return chapter_ids
+
+
+def _expand_pack_result(
+    *,
+    pack_id: str,
+    expand_chars: int,
+    workspace: Workspace,
+    interaction_locale: str,
+    chapters_by_id: dict[int, Chapter] | None,
+    db: Session,
+) -> tuple[dict[str, Any], bool]:
+    pack = workspace.evidence_packs.get(pack_id)
+    if not pack:
+        return (
+            {
+                "pack_id": pack_id,
                 "error": _tool_text(
                     interaction_locale,
                     CopilotTextKey.TOOL_UNKNOWN_PACK,
                     pack_id=pack_id,
                 ),
             },
-            ensure_ascii=False,
+            False,
         )
 
-    expand_chars = min(expand_chars or 2000, 4000)
-    for ref in pack.source_refs:
-        if ref.get("type") == "chapter" and ref.get("chapter_id"):
-            chapter = db.get(Chapter, ref["chapter_id"])
-            if chapter and chapter.content:
-                start = max(0, ref.get("start_pos", 0) - 200)
-                end = min(len(chapter.content), ref.get("end_pos", 0) + expand_chars)
-                pack.expanded_text = chapter.content[start:end]
+    normalized_expand_chars = min(expand_chars or 2000, 4000)
+    expanded_text = _expand_pack_text(
+        pack,
+        expand_chars=normalized_expand_chars,
+        chapters_by_id=chapters_by_id,
+        db=db,
+    )
+    if expanded_text and (
+        pack.expanded_text is None or len(expanded_text) > len(pack.expanded_text)
+    ):
+        pack.expanded_text = expanded_text
 
     if pack_id not in workspace.opened_pack_ids:
         workspace.opened_pack_ids.append(pack_id)
 
-    return json.dumps({
-        "pack_id": pack_id,
-        "expanded_text": pack.expanded_text or pack.preview_excerpt,
-        "source_refs": pack.source_refs,
-    }, ensure_ascii=False)
+    return (
+        {
+            "pack_id": pack_id,
+            "expanded_text": pack.expanded_text or pack.preview_excerpt,
+            "source_refs": pack.source_refs,
+        },
+        True,
+    )
+
+
+def _expand_pack_text(
+    pack: EvidencePack,
+    *,
+    expand_chars: int,
+    chapters_by_id: dict[int, Chapter] | None,
+    db: Session,
+) -> str | None:
+    for ref in pack.source_refs:
+        if ref.get("type") != "chapter" or not ref.get("chapter_id"):
+            continue
+        chapter_id = ref["chapter_id"]
+        chapter = (
+            chapters_by_id.get(chapter_id)
+            if chapters_by_id is not None
+            else db.get(Chapter, chapter_id)
+        )
+        if chapter and chapter.content:
+            start = max(0, ref.get("start_pos", 0) - 200)
+            end = min(len(chapter.content), ref.get("end_pos", 0) + expand_chars)
+            return chapter.content[start:end]
+    return None
 
 
 def _tool_read(

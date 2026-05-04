@@ -3,6 +3,7 @@ import type {
   CopilotReviewKind,
   CopilotSuggestionTarget,
 } from '@/types/copilot'
+import { normalizeWorldEntryHandoff } from '@/lib/worldEntryReview'
 
 export type NovelShellSurface = 'studio' | 'atlas'
 export type NovelShellStage =
@@ -14,10 +15,17 @@ export type NovelShellStage =
   | 'system'
   | 'review'
 
-export type NovelShellEntry = 'studio_host' | 'results_compat' | 'atlas' | null
+export type NovelShellEntry = 'studio_host' | 'atlas' | null
 export type AtlasWorkbenchTab = 'systems' | 'entities' | 'relationships' | 'review'
 export type NovelShellArtifactPanel = 'assistant' | 'injection_summary'
 export type NovelShellInjectionCategory = 'entities' | 'relationships' | 'systems'
+export type WorldEntryHandoffKind =
+  | 'generate_review'
+  | 'generate_success'
+  | 'extract_review'
+  | 'extract_success'
+  | 'extract_failed'
+export type WorldEntryPendingKind = 'extract'
 
 export interface NovelShellRouteState {
   surface: NovelShellSurface | null
@@ -41,6 +49,19 @@ export interface ResultsProvenance {
 export interface NovelShellArtifactPanelState {
   panel: NovelShellArtifactPanel
   injectionCategory: NovelShellInjectionCategory | null
+}
+
+export interface WorldEntryHandoffState {
+  kind: WorldEntryHandoffKind
+  entityCount: number | null
+  relationshipCount: number | null
+  systemCount: number | null
+}
+
+export interface WorldEntryPendingState {
+  kind: WorldEntryPendingKind
+  startedAtMs: number | null
+  jobId: number | null
 }
 
 export interface AtlasStudioOriginState {
@@ -74,6 +95,24 @@ function parseArtifactPanelValue(raw: string | null): NovelShellArtifactPanel {
   return raw === 'injection_summary' ? 'injection_summary' : 'assistant'
 }
 
+function parseWorldEntryHandoffKind(raw: string | null): WorldEntryHandoffKind | null {
+  if (
+    raw === 'generate_review'
+    || raw === 'generate_success'
+    || raw === 'extract_review'
+    || raw === 'extract_success'
+    || raw === 'extract_failed'
+  ) {
+    return raw
+  }
+  return null
+}
+
+function parseWorldEntryPendingKind(raw: string | null): WorldEntryPendingKind | null {
+  if (raw === 'extract') return raw
+  return null
+}
+
 export function readNovelShellArtifactPanelSearchParams(
   current: URLSearchParams,
 ): NovelShellArtifactPanelState {
@@ -104,6 +143,79 @@ export function setNovelShellArtifactPanelSearchParams(
   next.set('artifactPanel', 'injection_summary')
   if (nextState.injectionCategory) next.set('summaryCategory', nextState.injectionCategory)
   else next.delete('summaryCategory')
+  return next
+}
+
+export function readWorldEntryHandoffSearchParams(current: URLSearchParams): WorldEntryHandoffState | null {
+  const kind = parseWorldEntryHandoffKind(current.get('worldEntryHandoff'))
+  if (!kind) return null
+
+  const entityCount = parseNumberParam(current.get('worldEntryEntities'))
+  const relationshipCount = parseNumberParam(current.get('worldEntryRelationships'))
+  const systemCount = parseNumberParam(current.get('worldEntrySystems'))
+  return normalizeWorldEntryHandoff({
+    kind,
+    entityCount,
+    relationshipCount,
+    systemCount,
+  })
+}
+
+export function readWorldEntryPendingSearchParams(current: URLSearchParams): WorldEntryPendingState | null {
+  const kind = parseWorldEntryPendingKind(current.get('worldEntryPending'))
+  const startedAtMs = parseNumberParam(current.get('worldEntryPendingAt'))
+  const jobId = parseNumberParam(current.get('worldEntryPendingJob'))
+  if (!kind || (startedAtMs == null && jobId == null)) return null
+
+  return {
+    kind,
+    startedAtMs,
+    jobId,
+  }
+}
+
+export function setWorldEntryHandoffSearchParams(
+  current: URLSearchParams,
+  handoff: WorldEntryHandoffState | null,
+): URLSearchParams {
+  const next = new URLSearchParams(current)
+
+  if (!handoff) {
+    next.delete('worldEntryHandoff')
+    next.delete('worldEntryEntities')
+    next.delete('worldEntryRelationships')
+    next.delete('worldEntrySystems')
+    return next
+  }
+
+  next.set('worldEntryHandoff', handoff.kind)
+  if (handoff.entityCount == null) next.delete('worldEntryEntities')
+  else next.set('worldEntryEntities', String(handoff.entityCount))
+  if (handoff.relationshipCount == null) next.delete('worldEntryRelationships')
+  else next.set('worldEntryRelationships', String(handoff.relationshipCount))
+  if (handoff.systemCount == null) next.delete('worldEntrySystems')
+  else next.set('worldEntrySystems', String(handoff.systemCount))
+  return next
+}
+
+export function setWorldEntryPendingSearchParams(
+  current: URLSearchParams,
+  pending: WorldEntryPendingState | null,
+): URLSearchParams {
+  const next = new URLSearchParams(current)
+
+  if (!pending) {
+    next.delete('worldEntryPending')
+    next.delete('worldEntryPendingAt')
+    next.delete('worldEntryPendingJob')
+    return next
+  }
+
+  next.set('worldEntryPending', pending.kind)
+  if (pending.startedAtMs == null) next.delete('worldEntryPendingAt')
+  else next.set('worldEntryPendingAt', String(pending.startedAtMs))
+  if (pending.jobId == null) next.delete('worldEntryPendingJob')
+  else next.set('worldEntryPendingJob', String(pending.jobId))
   return next
 }
 
@@ -352,21 +464,6 @@ export function setResultsProvenanceSearchParams(
   return next
 }
 
-export function buildResultsCompatibilityPath(
-  novelId: number | string,
-  provenance: ResultsProvenance,
-  artifactPanelState: NovelShellArtifactPanelState | null = null,
-): string {
-  let nextSearchParams = new URLSearchParams()
-  nextSearchParams.set('continuations', provenance.continuations)
-  if (provenance.totalVariants !== null) {
-    nextSearchParams.set('total_variants', String(provenance.totalVariants))
-  }
-  nextSearchParams = setNovelShellArtifactPanelSearchParams(nextSearchParams, artifactPanelState)
-  const nextSearch = nextSearchParams.toString()
-  return `/novel/${novelId}/chapter/${provenance.chapterNum}/results${nextSearch ? `?${nextSearch}` : ''}`
-}
-
 export function buildStudioHostPath(
   novelId: number | string,
   origin: AtlasStudioOriginState,
@@ -486,22 +583,6 @@ export function parseNovelShellRouteState(pathname: string, search = ''): NovelS
   const [normalizedPathname, inlineSearch = ''] = pathname.split('?')
   const searchParams = new URLSearchParams(search || inlineSearch)
 
-  const resultsMatch = matchPath('/novel/:novelId/chapter/:chapterNum/results', normalizedPathname)
-  if (resultsMatch) {
-    return {
-      surface: 'studio',
-      stage: 'results',
-      entry: 'results_compat',
-      novelId: parseNumberParam(resultsMatch.params.novelId),
-      chapterNum: parseNumberParam(resultsMatch.params.chapterNum),
-      entityId: parseNumberParam(searchParams.get('entity')),
-      relationshipId: null,
-      systemId: parseNumberParam(searchParams.get('system')),
-      worldTab: null,
-      reviewKind: null,
-    }
-  }
-
   const studioMatch = matchPath('/novel/:novelId', normalizedPathname)
   if (studioMatch) {
     const stage = parseStudioStage(searchParams.get('stage'))
@@ -515,15 +596,13 @@ export function parseNovelShellRouteState(pathname: string, search = ''): NovelS
       relationshipId: null,
       systemId: parseNumberParam(searchParams.get('system')),
       worldTab: null,
-      reviewKind: stage === 'review'
-        ? parseAtlasReviewKind(searchParams.get('reviewKind') ?? searchParams.get('kind'))
-        : null,
+      reviewKind: stage === 'review' ? parseAtlasReviewKind(searchParams.get('reviewKind')) : null,
     }
   }
 
   const atlasMatch = matchPath('/world/:novelId', normalizedPathname)
   if (atlasMatch) {
-    const worldTab = parseAtlasTab(searchParams.get('tab') ?? searchParams.get('stage'))
+    const worldTab = parseAtlasTab(searchParams.get('tab'))
     const stage = atlasTabToStage(worldTab)
     return {
       surface: 'atlas',
