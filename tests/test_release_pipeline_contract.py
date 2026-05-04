@@ -220,6 +220,8 @@ def test_docker_publish_workflow_gates_latest_on_master_ci_success():
     assert "ghcr.io/${{ github.repository_owner }}/novelwriter" in workflow
     assert "org.opencontainers.image.source=https://github.com/Hurricane0698/novelwriter" in workflow
     assert "org.opencontainers.image.url=https://github.com/Hurricane0698/novelwriter" in workflow
+    assert "annotations: ${{ steps.meta.outputs.annotations }}" in workflow
+    assert "DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index" in workflow
     assert "type=raw,value=latest" in workflow
     assert "type=ref,event=tag" in workflow
     assert "Guard tag source" in workflow
