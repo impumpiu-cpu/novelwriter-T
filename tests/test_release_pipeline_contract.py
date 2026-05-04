@@ -15,6 +15,37 @@ def _read(rel_path: str) -> str:
     return (ROOT / rel_path).read_text(encoding="utf-8")
 
 
+def _app_version() -> str:
+    match = re.search(r'(?m)^APP_VERSION = "([^"]+)"$', _read("app/version.py"))
+    assert match, "app/version.py must define APP_VERSION"
+    return match.group(1)
+
+
+def test_release_version_metadata_stays_in_sync():
+    version = _app_version()
+    Version(version)
+
+    pyproject_data = tomllib.loads(_read("pyproject.toml"))
+    web_package = json.loads(_read("web/package.json"))
+    web_package_lock = json.loads(_read("web/package-lock.json"))
+    uv_lock = _read("uv.lock")
+    app_main = _read("app/main.py")
+    app_cli = _read("app/cli.py")
+    vite_config = _read("web/vite.config.ts")
+    ui_messages = _read("web/src/lib/uiMessages.ts")
+
+    assert pyproject_data["project"]["version"] == version
+    assert re.search(rf'\[\[package\]\]\nname = "novwr"\nversion = "{re.escape(version)}"', uv_lock)
+    assert web_package["version"] == version
+    assert web_package_lock["version"] == version
+    assert web_package_lock["packages"][""]["version"] == version
+    assert "version=APP_VERSION" in app_main
+    assert '"version": APP_VERSION' in app_main
+    assert "return APP_VERSION" in app_cli
+    assert "__NOVWR_APP_VERSION__" in vite_config
+    assert "const APP_VERSION_LABEL = `NovWr v${__NOVWR_APP_VERSION__}`" in ui_messages
+
+
 def test_release_tag_workflow_publishes_public_history_without_hosted_deploy():
     workflow = _read(".github/workflows/release-tag.yml")
 
@@ -43,6 +74,20 @@ def test_mirror_public_workflow_is_reusable_and_still_manual_dispatchable():
     assert "--latest" in workflow
     assert "public-release-applied-commits.md" in workflow
     assert "公开仓差异对比" in workflow
+    assert "这份 GitHub Release 由发布工作流自动生成" in workflow
+    assert "Public-Release-Source-SHA" in workflow
+    assert "Public-Release-Source-Repo" not in workflow
+    assert "Public-Release-Source-Ref" not in workflow
+    assert "Public-Release-Label" not in workflow
+    assert "私有主仓" not in workflow
+
+
+def test_public_readme_uses_external_release_repository_language():
+    readme = _read("README.md")
+
+    assert "稳定发布仓库" in readme
+    assert "私有仓库的稳定版发布分支" not in readme
+    assert "docs/public-release-repo.md" not in readme
 
 
 def test_internal_release_pipeline_files_stay_out_of_public_snapshot():

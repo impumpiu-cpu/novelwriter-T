@@ -1,7 +1,16 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { readFileSync } from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+
+const packageJson = JSON.parse(
+  readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf-8'),
+) as { version?: unknown }
+
+if (typeof packageJson.version !== 'string' || packageJson.version.trim() === '') {
+  throw new Error('web/package.json must define a non-empty version')
+}
 
 const buildId = (
   process.env.NOVWR_BUILD_ID
@@ -14,6 +23,7 @@ const buildId = (
 export default defineConfig({
   plugins: [react()],
   define: {
+    __NOVWR_APP_VERSION__: JSON.stringify(packageJson.version),
     __NOVWR_BUILD_ID__: JSON.stringify(buildId),
   },
   resolve: {

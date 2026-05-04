@@ -44,6 +44,7 @@ def test_access_health_endpoint_reports_hosted_access_contract(tmp_path, monkeyp
     from app.api import novels as novels_api
     from app.config import reload_settings
     from app.main import app
+    from app.version import APP_VERSION
 
     static_dir = _build_static_dir(tmp_path)
     upload_dir = tmp_path / "uploads"
@@ -69,8 +70,26 @@ def test_access_health_endpoint_reports_hosted_access_contract(tmp_path, monkeyp
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "healthy"
+    assert payload["version"] == APP_VERSION
     assert payload["checks"]["auth"]["invite_configured"] is True
     assert payload["checks"]["auth"]["invite_code_count"] == 1
     assert payload["checks"]["auth"]["github_login_enabled"] is False
     assert payload["checks"]["generation"]["stream_headers"]["X-Accel-Buffering"] == "no"
     assert payload["checks"]["monitoring"]["ready"] is False
+
+
+def test_health_endpoints_report_current_app_version(monkeypatch):
+    import app.main as main_mod
+    from app.main import app
+    from app.version import APP_VERSION
+
+    monkeypatch.setattr(main_mod, "_probe_database_connection", lambda: True)
+
+    with TestClient(app) as client:
+        api_response = client.get("/api")
+        health_response = client.get("/api/health")
+
+    assert api_response.status_code == 200
+    assert api_response.json()["version"] == APP_VERSION
+    assert health_response.status_code == 200
+    assert health_response.json()["version"] == APP_VERSION

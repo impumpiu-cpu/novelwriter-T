@@ -23,6 +23,7 @@ from app.api import usage as usage_api
 from app.core.rate_limit import limiter
 from app.core.auth import require_admin
 from app.models import User
+from app.version import APP_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI Novel Continuation System",
     description="Automatically continue unfinished web novels using AI",
-    version="0.01 Beta",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -280,7 +281,7 @@ def _build_access_health_report(*, static_dir: _Path | None) -> dict[str, object
 
     return {
         "status": "healthy" if not critical_failures else "degraded",
-        "version": "0.01 Beta",
+        "version": APP_VERSION,
         "uptime_seconds": _uptime_seconds(),
         "critical_failures": critical_failures,
         "checks": checks,
@@ -315,7 +316,7 @@ async def request_logging_middleware(request: Request, call_next):
 async def api_root():
     return {
         "message": "AI Novel Continuation System",
-        "version": "0.01 Beta",
+        "version": APP_VERSION,
         "docs": "/docs",
     }
 
@@ -325,7 +326,7 @@ async def health():
     db_ok = _probe_database_connection()
     return {
         "status": "healthy" if db_ok else "degraded",
-        "version": "0.01 Beta",
+        "version": APP_VERSION,
         "uptime_seconds": _uptime_seconds(),
         "db_connected": db_ok,
     }

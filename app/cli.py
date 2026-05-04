@@ -13,6 +13,8 @@ import urllib.request
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from app.version import APP_VERSION
+
 
 DEFAULT_INSTALL_DIR = Path.home() / ".novwr"
 DEFAULT_IMAGE = "ghcr.io/hurricane0698/novelwriter:latest"
@@ -31,7 +33,7 @@ def _project_version() -> str:
     try:
         return importlib.metadata.version("novwr")
     except importlib.metadata.PackageNotFoundError:
-        return "0.1.0"
+        return APP_VERSION
 
 
 def resolve_install_dir(path: str | None) -> Path:

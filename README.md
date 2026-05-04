@@ -302,9 +302,8 @@ scripts/          # 开发维护工具脚本
 
 ## 🌍 公开仓库说明
 
-本项目为私有仓库的稳定版发布分支，主要用于功能发布与社区反馈。
+本项目是 NovelWriter 的稳定发布仓库，主要用于版本发布、问题反馈与社区协作。
 - 若发现 Bug，请在提 Issue 时注明版本号或 Commit ID。
-- 详细的同步机制请参考 [`docs/public-release-repo.md`](docs/public-release-repo.md)。
 
 ---
 

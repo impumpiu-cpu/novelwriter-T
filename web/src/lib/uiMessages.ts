@@ -13,12 +13,14 @@ export type { UiLocale } from '@/lib/uiLocaleSchema'
 export type UiMessageParams = Record<string, string | number | boolean | null | undefined>
 export type UiMessageValue = string | ((params: UiMessageParams) => string)
 
+const APP_VERSION_LABEL = `NovWr v${__NOVWR_APP_VERSION__}`
+
 const settingsZhMessages = {
   'settings.title': '设置',
   'settings.section.appearance': '外观',
   'settings.section.ai': 'AI 模型配置',
   'settings.section.account': '账户',
-  'settings.footer.version': 'NovWr v0.01 Beta',
+  'settings.footer.version': APP_VERSION_LABEL,
   'settings.appearance.themeTitle': '主题模式',
   'settings.appearance.theme.dark': '深色模式',
   'settings.appearance.theme.light': '浅色模式',
@@ -207,7 +209,7 @@ const enMessages: Partial<Record<UiMessageKey, UiMessageValue>> = {
   'settings.section.appearance': 'Appearance',
   'settings.section.ai': 'AI model config',
   'settings.section.account': 'Account',
-  'settings.footer.version': 'NovWr v0.01 Beta',
+  'settings.footer.version': APP_VERSION_LABEL,
   'settings.appearance.themeTitle': 'Theme mode',
   'settings.appearance.theme.dark': 'Dark mode',
   'settings.appearance.theme.light': 'Light mode',
