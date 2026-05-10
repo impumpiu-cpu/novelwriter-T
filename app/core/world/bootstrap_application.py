@@ -19,10 +19,8 @@ from app.core.bootstrap import (
     BOOTSTRAP_MODE_INDEX_REFRESH,
     BOOTSTRAP_MODE_INITIAL,
     BOOTSTRAP_MODE_REEXTRACT,
-    BOOTSTRAP_RESULT_QUEUED_SOURCE_INGEST_AUTO,
     build_bootstrap_trigger_result,
     BootstrapRunSummary,
-    bootstrap_job_queued_source,
     find_legacy_manual_draft_ambiguity,
     is_running_status,
     is_stale_running_job,
@@ -48,19 +46,11 @@ BOOTSTRAP_HOSTED_BYOK_DISABLED_MESSAGE = "Hosted beta uses platform-managed AI c
 
 
 @dataclass(frozen=True, slots=True)
-class BootstrapWorkerClaim:
+class HostedBootstrapClaim:
     job_id: int
     novel_id: int
     user_id: int | None
     mode: str
-
-
-def _matches_worker_source(job: BootstrapJob, *, queued_source_filter: str | None) -> bool:
-    if queued_source_filter is None:
-        return True
-    return bootstrap_job_queued_source(job) == queued_source_filter
-
-
 async def trigger_bootstrap(
     novel_id: int,
     *,
@@ -209,12 +199,11 @@ def _uses_request_scoped_byok(llm_config: dict | None) -> bool:
     return llm_config.get("billing_source_hint") == "byok"
 
 
-def _claim_bootstrap_worker_job(
+def _claim_hosted_bootstrap_job(
     *,
     session_factory: Callable[[], Session],
     settings: Settings,
-    queued_source_filter: str | None,
-) -> BootstrapWorkerClaim | None:
+) -> HostedBootstrapClaim | None:
     db = session_factory()
     try:
         jobs = (
@@ -223,10 +212,8 @@ def _claim_bootstrap_worker_job(
             .all()
         )
         for job in jobs:
-            if not _matches_worker_source(job, queued_source_filter=queued_source_filter):
-                continue
             if job.status == "pending":
-                return BootstrapWorkerClaim(
+                return HostedBootstrapClaim(
                     job_id=job.id,
                     novel_id=job.novel_id,
                     user_id=resolve_bootstrap_trigger_user_id(job),
@@ -240,7 +227,7 @@ def _claim_bootstrap_worker_job(
             ):
                 continue
             logger.warning(
-                "Reclaiming stale background bootstrap job",
+                "Reclaiming stale hosted bootstrap job",
                 extra={"novel_id": job.novel_id, "job_id": job.id, "status": job.status},
             )
             job.status = "pending"
@@ -248,11 +235,10 @@ def _claim_bootstrap_worker_job(
             job.result = build_bootstrap_trigger_result(
                 mode=job.mode,
                 user_id=resolve_bootstrap_trigger_user_id(job),
-                queued_source=bootstrap_job_queued_source(job),
             )
             job.error = None
             db.commit()
-            return BootstrapWorkerClaim(
+            return HostedBootstrapClaim(
                 job_id=job.id,
                 novel_id=job.novel_id,
                 user_id=resolve_bootstrap_trigger_user_id(job),
@@ -273,26 +259,21 @@ def run_next_bootstrap_job(
     background_job_runner: Callable[..., Awaitable[None]] | None = None,
 ) -> bool:
     resolved_settings = settings or get_settings()
-    queued_source_filter = (
-        BOOTSTRAP_RESULT_QUEUED_SOURCE_INGEST_AUTO
-        if resolved_settings.deploy_mode == "selfhost"
-        else None
-    )
+    if resolved_settings.deploy_mode != "hosted":
+        return False
 
-    claim = _claim_bootstrap_worker_job(
+    claim = _claim_hosted_bootstrap_job(
         session_factory=session_factory,
         settings=resolved_settings,
-        queued_source_filter=queued_source_filter,
     )
     if claim is None:
         return False
 
     logger.info(
-        "bootstrap[%d]: background worker picked queued job novel=%d mode=%s source=%s",
+        "bootstrap[%d]: hosted worker picked queued job novel=%d mode=%s",
         claim.job_id,
         claim.novel_id,
         claim.mode,
-        queued_source_filter or "any",
     )
     runner = background_job_runner or run_bootstrap_background_job
     asyncio.run(

@@ -28,6 +28,7 @@ def test_internal_callers_use_precise_state_proto_modules_instead_of_compat_faca
         "app/core/indexing/__init__.py": "from .state_proto import",
         "app/core/indexing/lifecycle.py": "from .state_proto import",
         "app/core/indexing/window_index.py": "from .state_proto import",
+        "scripts/profile_state_index_proto.py": "from app.core.indexing.state_proto import",
     }
 
     for relative_path, forbidden in forbidden_imports.items():

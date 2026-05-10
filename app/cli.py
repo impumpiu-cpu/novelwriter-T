@@ -22,7 +22,6 @@ DEFAULT_BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = "8000"
 DEFAULT_DATA_DIR = "./data"
 DEFAULT_CONTAINER_NAME = "novwr"
-DEFAULT_WORKER_CONTAINER_NAME = "novwr-worker"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_JWT_PLACEHOLDER = "CHANGE-ME-IN-PRODUCTION"
@@ -48,7 +47,6 @@ def default_env_values() -> dict[str, str]:
         "NOVWR_PORT": DEFAULT_PORT,
         "NOVWR_DATA_DIR": DEFAULT_DATA_DIR,
         "NOVWR_CONTAINER_NAME": DEFAULT_CONTAINER_NAME,
-        "NOVWR_WORKER_CONTAINER_NAME": DEFAULT_WORKER_CONTAINER_NAME,
         "OPENAI_API_KEY": "",
         "OPENAI_BASE_URL": DEFAULT_OPENAI_BASE_URL,
         "OPENAI_MODEL": DEFAULT_OPENAI_MODEL,
@@ -74,17 +72,6 @@ def docker_compose_template() -> str:
               - .env
             volumes:
               - ${NOVWR_DATA_DIR}:/data
-          novwr-worker:
-            image: ${NOVWR_IMAGE}
-            container_name: ${NOVWR_WORKER_CONTAINER_NAME}
-            restart: unless-stopped
-            command: ["sh", "-c", "python -m app.selfhost_db_bootstrap && python -m app.workers.background_jobs"]
-            env_file:
-              - .env
-            volumes:
-              - ${NOVWR_DATA_DIR}:/data
-            depends_on:
-              - novwr
         """
     )
 
@@ -125,7 +112,6 @@ def build_env_file(
         "NOVWR_PORT",
         "NOVWR_DATA_DIR",
         "NOVWR_CONTAINER_NAME",
-        "NOVWR_WORKER_CONTAINER_NAME",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "OPENAI_MODEL",
@@ -328,7 +314,6 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
         port=None,
     )
     (install_dir / ENV_FILE_NAME).write_text(env_text, encoding="utf-8")
-    (install_dir / COMPOSE_FILE_NAME).write_text(docker_compose_template(), encoding="utf-8")
     _deploy(install_dir, pull=True)
     return 0
 

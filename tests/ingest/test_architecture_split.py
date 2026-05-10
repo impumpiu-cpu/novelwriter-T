@@ -16,12 +16,7 @@ from app.core.ingest import (
     resolve_ingest_policy,
     run_novel_ingest_job_until_idle,
 )
-from app.core.bootstrap import (
-    BOOTSTRAP_RESULT_QUEUED_SOURCE_INGEST_AUTO,
-    build_bootstrap_trigger_result,
-)
 from app.core.indexing import run_next_window_index_rebuild_job
-from app.core.world import bootstrap_application as bootstrap_app
 from app.config import Settings
 from app.database import Base, get_db
 from app.models import BootstrapJob, Chapter, DerivedAssetJob, Novel, NovelIngestJob, User
@@ -174,60 +169,7 @@ def test_ingest_job_queues_auto_bootstrap_when_selfhost_llm_is_configured(db, tm
     assert bootstrap_job.mode == "initial"
     assert bootstrap_job.status == "pending"
     assert bootstrap_job.result["index_refresh_only"] is False
-    assert bootstrap_job.result["_queued_source"] == BOOTSTRAP_RESULT_QUEUED_SOURCE_INGEST_AUTO
     assert bootstrap_job.result["_queued_user_id"] == user.id
-
-    observed: list[dict[str, object]] = []
-
-    async def _runner(job_id: int, *, session_factory, user_id=None, llm_config=None):
-        observed.append(
-            {
-                "job_id": job_id,
-                "user_id": user_id,
-                "llm_config": llm_config,
-                "session_factory": session_factory,
-            }
-        )
-
-    assert bootstrap_app.run_next_bootstrap_job(
-        session_factory=TestingSessionLocal,
-        settings=_selfhost_llm_ready_settings(),
-        background_job_runner=_runner,
-    ) is True
-    assert observed[0]["job_id"] == bootstrap_job.id
-    assert observed[0]["user_id"] == user.id
-    assert observed[0]["llm_config"] is None
-
-
-def test_selfhost_worker_skips_manual_bootstrap_jobs_to_preserve_request_scoped_byok(db, tmp_path, user):
-    file_path = _write_source(tmp_path, "manual-bootstrap.txt", "第一章 开端\n这里是第一章内容。\n")
-    novel = Novel(title="T", author="A", language="zh", file_path=file_path, owner_id=user.id, total_chapters=1)
-    db.add(novel)
-    db.commit()
-    db.refresh(novel)
-    db.add(Chapter(novel_id=novel.id, chapter_number=1, title="第一章", content="这里是第一章内容。"))
-    job = BootstrapJob(
-        novel_id=novel.id,
-        mode="initial",
-        status="pending",
-        progress={"step": 0, "detail": "queued"},
-        result=build_bootstrap_trigger_result(mode="initial", user_id=user.id),
-    )
-    db.add(job)
-    db.commit()
-
-    observed: list[int] = []
-
-    async def _runner(job_id: int, *, session_factory, user_id=None, llm_config=None):
-        _ = (session_factory, user_id, llm_config)
-        observed.append(job_id)
-
-    assert bootstrap_app.run_next_bootstrap_job(
-        session_factory=TestingSessionLocal,
-        settings=_selfhost_llm_ready_settings(),
-        background_job_runner=_runner,
-    ) is False
-    assert observed == []
 
 
 def test_ingest_policy_centralizes_normal_large_and_upload_limit_reject_thresholds():

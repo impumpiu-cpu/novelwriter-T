@@ -10,7 +10,6 @@ from app.cli import (
     DEFAULT_IMAGE,
     build_env_file,
     cmd_uninstall,
-    cmd_upgrade,
     docker_compose_template,
     ensure_install_scaffold,
     healthcheck_url_for_env,
@@ -26,7 +25,6 @@ def test_build_env_file_includes_expected_defaults() -> None:
     assert env["NOVWR_BIND_HOST"] == "127.0.0.1"
     assert env["NOVWR_PORT"] == "8000"
     assert env["DEPLOY_MODE"] == "selfhost"
-    assert env["NOVWR_WORKER_CONTAINER_NAME"] == "novwr-worker"
     assert env["JWT_SECRET_KEY"]
 
 
@@ -71,8 +69,6 @@ def test_docker_compose_template_uses_image_based_selfhost_stack() -> None:
     assert "${NOVWR_IMAGE}" in template
     assert "${NOVWR_BIND_HOST}:${NOVWR_PORT}:8000" in template
     assert "${NOVWR_DATA_DIR}:/data" in template
-    assert "${NOVWR_WORKER_CONTAINER_NAME}" in template
-    assert 'python -m app.selfhost_db_bootstrap && python -m app.workers.background_jobs' in template
 
 
 def test_cmd_uninstall_removes_managed_files_and_preserves_data_by_default(
@@ -88,20 +84,6 @@ def test_cmd_uninstall_removes_managed_files_and_preserves_data_by_default(
     assert not (tmp_path / "docker-compose.yml").exists()
     assert (tmp_path / "data").exists()
     assert tmp_path.exists()
-
-
-def test_cmd_upgrade_refreshes_managed_compose_template(tmp_path: Path, monkeypatch) -> None:
-    ensure_install_scaffold(tmp_path)
-    (tmp_path / "docker-compose.yml").write_text("services:\n  novwr:\n    image: old\n", encoding="utf-8")
-    monkeypatch.setattr(cli, "_deploy", lambda install_dir, *, pull: parse_env_file((install_dir / ".env").read_text()))
-
-    result = cmd_upgrade(argparse.Namespace(dir=str(tmp_path), image=None))
-
-    assert result == 0
-    compose = (tmp_path / "docker-compose.yml").read_text(encoding="utf-8")
-    assert "novwr-worker:" in compose
-    assert 'app.workers.background_jobs' in compose
-    assert 'app.selfhost_db_bootstrap' in compose
 
 
 def test_cmd_uninstall_with_delete_data_removes_install_dir_when_empty(
