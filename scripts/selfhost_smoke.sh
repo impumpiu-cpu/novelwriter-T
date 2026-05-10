@@ -120,22 +120,12 @@ unset NOVWR_HOME NOVWR_IMAGE NOVWR_BIND_HOST NOVWR_PORT NOVWR_PACKAGE_SPEC NOVWR
 echo "[selfhost-smoke] official selfhost compose flow"
 COMPOSE_DIR="$(mktemp -d)"
 COMPOSE_PROJECT_NAME="novwr-smoke-${RANDOM}"
-cp deploy/selfhost/docker-compose.yml "$COMPOSE_DIR/docker-compose.yml"
-cat > "$COMPOSE_DIR/.env" <<EOF
-NOVWR_IMAGE=$SMOKE_IMAGE_TAG
-NOVWR_BIND_HOST=127.0.0.1
-NOVWR_PORT=$COMPOSE_PORT
-NOVWR_DATA_DIR=./data
-NOVWR_CONTAINER_NAME=novwr-compose-smoke
-OPENAI_API_KEY=dummy
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-4o-mini
-JWT_SECRET_KEY=test-secret-compose-smoke
-DEPLOY_MODE=selfhost
-ENVIRONMENT=dev
-DATABASE_URL=sqlite:////data/scngs.db
-SCNGS_DATA_DIR=/data
-EOF
+uv tool run --isolated --from "$WHEEL_PATH" novwr init \
+  --dir "$COMPOSE_DIR" \
+  --image "$SMOKE_IMAGE_TAG" \
+  --bind-host 127.0.0.1 \
+  --port "$COMPOSE_PORT" \
+  --force >/dev/null
 
 docker compose --project-directory "$COMPOSE_DIR" --project-name "$COMPOSE_PROJECT_NAME" config >/dev/null
 docker compose --project-directory "$COMPOSE_DIR" --project-name "$COMPOSE_PROJECT_NAME" up -d

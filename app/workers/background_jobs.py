@@ -20,7 +20,7 @@ def run_worker_loop(*, once: bool = False) -> int:
     settings = get_settings()
     configure_logging(is_production=settings.is_production)
     init_db()
-    logger.info("hosted_jobs: worker started")
+    logger.info("background_jobs: worker started")
 
     idle_cycles = 0
     while True:
@@ -43,7 +43,7 @@ def run_worker_loop(*, once: bool = False) -> int:
 
         idle_cycles += 1
         if idle_cycles == 1 or idle_cycles % 30 == 0:
-            logger.debug("hosted_jobs: idle")
+            logger.debug("background_jobs: idle")
         time.sleep(max(float(settings.hosted_job_worker_poll_seconds or 0.0), 0.25))
 
 

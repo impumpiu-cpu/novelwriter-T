@@ -13,7 +13,7 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-"$ROOT_DIR/scripts/uv_run.sh" python -m app.workers.hosted_jobs &
+"$ROOT_DIR/scripts/uv_run.sh" python -m app.workers.background_jobs &
 WORKER_PID="$!"
 
 exec "$ROOT_DIR/scripts/uv_run.sh" uvicorn app.main:app --port 8000
