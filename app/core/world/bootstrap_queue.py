@@ -8,13 +8,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
+from app.core.bootstrap_contract import (
+    BOOTSTRAP_MODE_INITIAL,
+    BOOTSTRAP_RESULT_QUEUED_SOURCE_INGEST_AUTO,
+    build_bootstrap_trigger_result,
+)
 from app.core.world.bootstrap_state import is_bootstrap_initialized
 from app.models import BootstrapJob, Chapter, Novel, NovelIngestJob
 
 logger = logging.getLogger(__name__)
 
-_BOOTSTRAP_MODE_INITIAL = "initial"
-_BOOTSTRAP_RESULT_QUEUED_USER_ID_KEY = "_queued_user_id"
 _RUNNING_BOOTSTRAP_STATUSES = frozenset(
     {
         "pending",
@@ -95,11 +98,15 @@ def ensure_ingest_bootstrap_job(
             job = BootstrapJob(novel_id=novel_id)
             db.add(job)
 
-        job.mode = _BOOTSTRAP_MODE_INITIAL
+        job.mode = BOOTSTRAP_MODE_INITIAL
         job.draft_policy = None
         job.status = "pending"
         job.progress = {"step": 0, "detail": "queued"}
-        job.result = _build_bootstrap_trigger_result(user_id=getattr(novel, "owner_id", None))
+        job.result = build_bootstrap_trigger_result(
+            mode=BOOTSTRAP_MODE_INITIAL,
+            user_id=getattr(novel, "owner_id", None),
+            queued_source=BOOTSTRAP_RESULT_QUEUED_SOURCE_INGEST_AUTO,
+        )
         job.error = None
 
         try:
@@ -124,17 +131,6 @@ def ensure_ingest_bootstrap_job(
         return job
     finally:
         db.close()
-
-
-def _build_bootstrap_trigger_result(*, user_id: int | None) -> dict[str, int | bool]:
-    result: dict[str, int | bool] = {
-        "entities_found": 0,
-        "relationships_found": 0,
-        "index_refresh_only": False,
-    }
-    if user_id is not None:
-        result[_BOOTSTRAP_RESULT_QUEUED_USER_ID_KEY] = int(user_id)
-    return result
 
 
 def _has_non_empty_chapter_text(novel_id: int, db: Session) -> bool:

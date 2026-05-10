@@ -10,6 +10,8 @@ from app.models import BootstrapJob
 
 DEFAULT_STALE_JOB_TIMEOUT_SECONDS = 900
 BOOTSTRAP_RESULT_QUEUED_USER_ID_KEY = "_queued_user_id"
+BOOTSTRAP_RESULT_QUEUED_SOURCE_KEY = "_queued_source"
+BOOTSTRAP_RESULT_QUEUED_SOURCE_INGEST_AUTO = "ingest_auto"
 BOOTSTRAP_MODE_INITIAL = "initial"
 BOOTSTRAP_MODE_INDEX_REFRESH = "index_refresh"
 BOOTSTRAP_MODE_REEXTRACT = "reextract"
@@ -159,15 +161,27 @@ def build_bootstrap_trigger_result(
     *,
     mode: str,
     user_id: int | None = None,
-) -> dict[str, int | bool]:
-    result: dict[str, int | bool] = {
+    queued_source: str | None = None,
+) -> dict[str, int | bool | str]:
+    result: dict[str, int | bool | str] = {
         "entities_found": 0,
         "relationships_found": 0,
         "index_refresh_only": resolve_bootstrap_mode(mode) == BOOTSTRAP_MODE_INDEX_REFRESH,
     }
     if user_id is not None:
         result[BOOTSTRAP_RESULT_QUEUED_USER_ID_KEY] = int(user_id)
+    if queued_source is not None:
+        result[BOOTSTRAP_RESULT_QUEUED_SOURCE_KEY] = queued_source
     return result
+
+
+def bootstrap_job_queued_source(job: BootstrapJob) -> str | None:
+    raw_result = job.result or {}
+    raw_source = raw_result.get(BOOTSTRAP_RESULT_QUEUED_SOURCE_KEY)
+    if not isinstance(raw_source, str):
+        return None
+    normalized = raw_source.strip()
+    return normalized or None
 
 
 def resolve_bootstrap_trigger_user_id(job: BootstrapJob) -> int | None:
@@ -188,12 +202,15 @@ __all__ = [
     "BOOTSTRAP_MODE_INDEX_REFRESH",
     "BOOTSTRAP_MODE_INITIAL",
     "BOOTSTRAP_MODE_REEXTRACT",
+    "BOOTSTRAP_RESULT_QUEUED_SOURCE_INGEST_AUTO",
+    "BOOTSTRAP_RESULT_QUEUED_SOURCE_KEY",
     "BOOTSTRAP_RESULT_QUEUED_USER_ID_KEY",
     "BOOTSTRAP_STATUS_SEQUENCE",
     "BootstrapRunSummary",
     "DEFAULT_STALE_JOB_TIMEOUT_SECONDS",
     "LegacyDraftAmbiguity",
     "RUNNING_BOOTSTRAP_STATUSES",
+    "bootstrap_job_queued_source",
     "build_bootstrap_trigger_result",
     "is_running_status",
     "is_stale_running_job",

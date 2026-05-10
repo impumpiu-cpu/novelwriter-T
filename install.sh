@@ -53,7 +53,7 @@ resolve_uv_version() {
   fi
 
   local raw_base repo_ref detected_version
-  repo_ref="${NOVWR_INSTALL_REF:-master}"
+  repo_ref="${NOVWR_INSTALL_REF:-main}"
   if raw_base="$(github_raw_base)"; then
     detected_version="$(
       curl -fsSL "${raw_base}/${repo_ref}/.uv-version" 2>/dev/null | tr -d '[:space:]'
@@ -76,7 +76,7 @@ build_package_spec() {
   local repo_url="${NOVWR_REPO_URL%.git}"
   if [[ "$repo_url" == https://github.com/* ]]; then
     if [[ -z "$NOVWR_INSTALL_REF" ]]; then
-      printf 'novwr @ %s/archive/refs/heads/master.tar.gz\n' "$repo_url"
+      printf 'novwr @ %s/archive/refs/heads/main.tar.gz\n' "$repo_url"
       return
     fi
     printf 'novwr @ %s/archive/%s.tar.gz\n' "$repo_url" "$NOVWR_INSTALL_REF"

@@ -134,7 +134,7 @@ Novel Copilot 拒绝越俎代庖。它遵循极其克制的「Find -> Open -> Re
 > 需要本机已安装 Docker；**不需要 Git**。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Hurricane0698/novelwriter/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Hurricane0698/novelwriter/main/install.sh | bash
 ```
 
 安装脚本会自动：
@@ -181,6 +181,7 @@ http://localhost:8000
 ### Selfhost 说明
 
 - **运行模式**：默认以 `selfhost` 模式启动，前后端已集成。为了安全起见，默认仅监听 `127.0.0.1:8000`。
+- **后台任务**：Docker Compose 会同时启动 Web 服务和后台 worker；上传导入、全书索引、自动世界提取都由 worker 消费队列。
 - **初始化**：首次启动时，系统会自动创建默认管理员账号，并内置《西游记》示例项目以供试用。
 - **必要条件**：需准备可用的大模型 API Key（兼容 OpenAI 接口标准）。
 - **兼容性检查**：可在设置页面使用“测试连接”功能，验证 API 连通性、流式响应及 JSON Mode 支持。
