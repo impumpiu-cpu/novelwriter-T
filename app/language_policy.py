@@ -207,9 +207,22 @@ class LanguagePolicy:
         target_chars: int,
         *,
         backtrack_window: int = DEFAULT_SENTENCE_BACKTRACK_WINDOW,
+        max_overrun_chars: int = 0,
     ) -> str:
         if target_chars <= 0:
             return text
+
+        # Prefer keeping the sentence that straddles target_chars whole: when the
+        # model produced more than target_chars, look forward to the next sentence
+        # boundary within the overrun ceiling before falling back to a backward
+        # (<= target) cut. This avoids systematically severing the final sentence
+        # of a continuation just to stay under target. max_overrun_chars == 0
+        # preserves the historical backward-only behavior for other callers.
+        if max_overrun_chars > 0 and len(text) > target_chars:
+            ceiling = min(len(text), target_chars + max_overrun_chars)
+            for idx in range(target_chars, ceiling + 1):
+                if self._is_sentence_boundary_at(text, idx):
+                    return text[:idx].rstrip()
 
         slice_end = min(len(text), target_chars)
         trimmed = text[:slice_end].rstrip()

@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     continuation_chars_to_tokens_ratio: float = 2.5
     continuation_token_buffer_ratio: float = 0.1
     continuation_prompt_target_overrun_ratio: float = 1.12
+    # When trimming continuation output, allow the cut to extend up to this
+    # multiple of target_chars forward to the next sentence boundary, so the
+    # sentence straddling the target is kept whole instead of dropped (prefer a
+    # little over target to severing mid-plot). 1.0 disables forward overshoot.
+    continuation_trim_overrun_ratio: float = 1.15
 
     # World generation from free-text settings
     world_generation_chunk_chars: int = 7000

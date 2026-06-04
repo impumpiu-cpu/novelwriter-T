@@ -329,8 +329,13 @@ class TestContinueEndpoint:
         assert resp.status_code == 200
 
         content = resp.json()["continuations"][0]["content"]
-        assert len(content) <= 4000
+        # Bounded overrun (issue #6): the sentence straddling target_chars is kept
+        # whole rather than severed back under target, while staying within the
+        # trim-overrun ceiling (target * continuation_trim_overrun_ratio).
+        assert content == "甲" * 3990 + "。" + "乙" * 300 + "。"
         assert content.endswith("。")
+        trim_settings = generator_mod.get_settings()
+        assert len(content) <= math.ceil(4000 * trim_settings.continuation_trim_overrun_ratio)
         assert len(calls) == 1
         settings = generator_mod.get_settings()
         expected_max_tokens = math.ceil(4000 * settings.continuation_chars_to_tokens_ratio)

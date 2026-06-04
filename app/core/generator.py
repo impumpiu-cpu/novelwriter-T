@@ -101,8 +101,13 @@ def _compute_max_tokens(
 
 
 def _trim_to_target_chars(text: str, target_chars: int, *, language: str | None = None) -> str:
+    settings = get_settings()
+    overrun_ratio = max(1.0, settings.continuation_trim_overrun_ratio)
+    max_overrun_chars = math.ceil(target_chars * (overrun_ratio - 1.0))
     policy = get_language_policy(language, sample_text=text)
-    return policy.trim_to_sentence_boundary(text, target_chars)
+    return policy.trim_to_sentence_boundary(
+        text, target_chars, max_overrun_chars=max_overrun_chars
+    )
 
 
 async def _build_continuation_prompt(
