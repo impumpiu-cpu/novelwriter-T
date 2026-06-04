@@ -71,6 +71,56 @@ class TestAgentLoop:
         assert workspace.tool_journal[0]["tool_metadata"]["read_only"] is True
 
     @pytest.mark.asyncio
+    async def test_recovers_text_form_tool_call_leaked_as_content(self, db, novel, entities, chapters, mock_setup, monkeypatch):
+        """A gateway that returns the tool call as plain text is salvaged so
+        retrieval still runs and a real answer (not raw markup) is produced."""
+        from app.core.copilot.runtime_adapters import run_tool_loop as _run_tool_loop
+        from app.core.ai_client import ToolLLMResponse
+
+        session_data, prompt, session, run = mock_setup
+        from app.core.copilot.scope import gather_evidence, load_scope_snapshot
+        from app.core.copilot.runtime_scenario import derive_scenario
+        snapshot = load_scope_snapshot(db, novel, session.mode, session.scope, session.context_json)
+        evidence = gather_evidence(db, novel, snapshot, session.context_json)
+        scenario = derive_scenario(session.mode, session.scope, session.context_json)
+
+        call_count = 0
+
+        async def mock_generate_with_tools(self_client, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Tool call leaked as text content; structured tool_calls empty.
+                return ToolLLMResponse(
+                    content='<tool_call>{"name": "find", "arguments": {"query": "张三"}}</tool_call>',
+                    tool_calls=[],
+                    finish_reason="stop",
+                )
+            return ToolLLMResponse(
+                content='{"answer": "张三是主角", "suggestions": []}',
+                tool_calls=[],
+                finish_reason="stop",
+            )
+
+        monkeypatch.setattr("app.core.ai_client.AIClient.generate_with_tools", mock_generate_with_tools)
+        monkeypatch.setattr("app.core.llm_semaphore.acquire_llm_slot", lambda: _noop_coro())
+        monkeypatch.setattr("app.core.llm_semaphore.release_llm_slot", lambda: None)
+
+        def test_db_factory():
+            return db
+
+        parsed, tool_evidence, workspace = await _run_tool_loop(
+            test_db_factory, novel.id, session_data, prompt, None, 1, snapshot, scenario, evidence, "task_query",
+        )
+
+        # The find tool actually executed despite the leaked text-form call,
+        # and the final answer is clean prose rather than raw markup.
+        assert workspace.tool_call_count >= 1
+        assert any(entry.get("tool") == "find" for entry in workspace.tool_journal)
+        assert parsed["answer"] == "张三是主角"
+        assert call_count >= 2
+
+    @pytest.mark.asyncio
     async def test_executes_all_tool_calls_from_single_model_turn(self, db, novel, entities, chapters, mock_setup, monkeypatch):
         from app.core.copilot.runtime_adapters import run_tool_loop as _run_tool_loop
         from app.core.ai_client import ToolLLMResponse, ToolCall

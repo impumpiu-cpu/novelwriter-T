@@ -76,3 +76,20 @@ class TestParseLLMResponse:
         assert "法宝" in result["answer"]
         assert len(result["suggestions"]) == 1
         assert result["suggestions"][0]["kind"] == "update_entity"
+
+    def test_leaked_tool_call_markup_stripped_from_answer(self):
+        """A final answer that still carries text-form tool-call markup must not
+        surface the raw scaffolding to the user (issue #5 degradation)."""
+        from app.core.copilot.run_state import parse_llm_response as _parse_llm_response
+        text = '分析完成。\n<tool_call>{"name": "find", "arguments": {"query": "x"}}</tool_call>'
+        result = _parse_llm_response(text)
+        assert "tool_call" not in result["answer"]
+        assert "find" not in result["answer"]
+        assert "分析完成" in result["answer"]
+        assert result["suggestions"] == []
+
+    def test_clean_json_answer_untouched_by_markup_strip(self):
+        from app.core.copilot.run_state import parse_llm_response as _parse_llm_response
+        result = _parse_llm_response('{"answer": "孙悟空是主角", "suggestions": []}')
+        assert result["answer"] == "孙悟空是主角"
+        assert result["suggestions"] == []

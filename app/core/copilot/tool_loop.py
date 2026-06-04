@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.ai_client import AIClient
 from app.core.copilot.prompt_contract import PromptBuild
 from app.core.copilot.scope import EvidenceItem, ScopeSnapshot
+from app.core.copilot.tool_call_recovery import recover_tool_calls_from_text
 from app.core.copilot.tool_contract import ResearchToolCatalog
 from app.core.copilot.tool_runtime import (
     build_assistant_tool_call_message,
@@ -196,6 +197,7 @@ async def run_tool_loop(
     max_rounds = settings.copilot_max_tool_rounds
     client = deps.client_factory()
     llm_kwargs = deps.extract_llm_kwargs(llm_config)
+    valid_tool_names = {spec.name for spec in deps.tool_catalog.specs}
 
     if inherited_workspace and inherited_workspace.get("messages"):
         workspace = Workspace.from_dict(inherited_workspace)
@@ -297,7 +299,23 @@ async def run_tool_loop(
 
         _ensure_run_lease(deps, db_factory, run_id=run_id, worker_id=worker_id)
 
-        if not response.tool_calls:
+        tool_calls = response.tool_calls
+        recovered_from_text = False
+        if not tool_calls:
+            recovered = recover_tool_calls_from_text(
+                response.content, valid_tool_names
+            )
+            if recovered:
+                logger.warning(
+                    "Tool loop recovered %d text-form tool call(s) at round %d; "
+                    "gateway returned tool calls as plain text",
+                    len(recovered),
+                    workspace.round_count,
+                )
+                tool_calls = recovered
+                recovered_from_text = True
+
+        if not tool_calls:
             parsed = deps.parse_llm_response(response.content or "")
             workspace.final_answer_draft = response.content
             if response.content:
@@ -313,12 +331,15 @@ async def run_tool_loop(
 
         messages.append(
             build_assistant_tool_call_message(
-                response.tool_calls,
-                content=response.content,
+                tool_calls,
+                # When the call was recovered from text, the original content was
+                # the tool-call markup itself; drop it so history stays clean and
+                # providers do not reject a content+tool_calls assistant message.
+                content=None if recovered_from_text else response.content,
             )
         )
         workspace.pending_tool_calls = [
-            serialize_tool_call(tool_call) for tool_call in response.tool_calls
+            serialize_tool_call(tool_call) for tool_call in tool_calls
         ]
         workspace.messages = list(messages)
 

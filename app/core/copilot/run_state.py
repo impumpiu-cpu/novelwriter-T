@@ -349,8 +349,20 @@ def parse_llm_response(text: str) -> dict[str, Any]:
     2. JSON wrapped in ```json ... ``` code blocks (possibly with text before/after)
     3. Raw JSON object embedded in natural language text
     4. Fallback: treat entire text as the answer (no suggestions)
+
+    Tool-call markup that a gateway returned as plain text (instead of a
+    structured tool call) is stripped first so raw scaffolding never reaches the
+    user-facing answer. The happy path (clean prose or answer JSON) is untouched.
     """
     import re
+
+    from app.core.copilot.tool_call_recovery import (
+        contains_tool_call_markup,
+        strip_tool_call_markup,
+    )
+
+    if contains_tool_call_markup(text):
+        text = strip_tool_call_markup(text)
 
     stripped = text.strip()
 
