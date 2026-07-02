@@ -2,7 +2,7 @@ services:
   scngs:
     build: .
     ports:
-      # Default to localhost-only to keep selfhost mode private-by-default.
+      # По умолчанию слушаем только localhost: режим selfhost приватен из коробки.
       - "127.0.0.1:8000:8000"
     volumes:
       - scngs-data:/data

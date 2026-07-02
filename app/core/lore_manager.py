@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Isaac.X.Ω.Yuan
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""
-LoreManager: Millisecond-level entity-triggered context injection.
+"""LoreManager: миллисекундная инъекция контекста по упоминаниям сущностей.
 
-Performance target: <10ms for 100K entries using Aho-Corasick automaton.
+Строит автомат Ахо–Корасик по именам/псевдонимам записей мира и находит их
+упоминания в тексте контекста, чтобы внедрить в промпт только релевантный сеттинг.
+Целевая производительность: <10 мс на 100 тыс. записей.
 
-Session Safety: This class does NOT store db: Session. The automaton/state
-can be cached, and db is passed only to methods that need data access.
+Безопасность сессий: класс НЕ хранит ``db: Session``. Автомат/состояние можно
+кешировать, а ``db`` передаётся только методам, которым нужен доступ к данным.
 """
 
 import ahocorasick

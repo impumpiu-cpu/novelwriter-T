@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: 2026 Isaac.X.Ω.Yuan
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Tool-loop orchestration helpers for copilot."""
+"""Оркестрация инструментального цикла Copilot.
+
+Реализует исследовательский цикл «find → open → read»: модель на каждом шаге
+решает, вызвать ли инструмент поиска/чтения или завершить анализ. Ведётся
+трассировка шагов (показывается пользователю как «ход исследования»); при
+моделях без поддержки tool calls выполняется откат к одношаговому анализу.
+"""
 
 from __future__ import annotations
 
