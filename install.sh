@@ -16,7 +16,7 @@ DEFAULT_NOVWR_UV_VERSION="0.10.4"
 ensure_command() {
   local cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "Missing required command: $cmd" >&2
+    echo "Отсутствует обязательная команда: $cmd" >&2
     exit 1
   fi
 }
@@ -28,7 +28,7 @@ ensure_uv() {
 
   local uv_version
   uv_version="$(resolve_uv_version)"
-  echo "uv not found; installing uv..."
+  echo "uv не найден; устанавливаем uv..."
   local installer
   installer="$(mktemp)"
   curl -LsSf "https://astral.sh/uv/${uv_version}/install.sh" -o "$installer"
@@ -99,13 +99,13 @@ if [[ "$package_spec" == git+* ]]; then
   ensure_command git
 fi
 
-echo "Installing novwr CLI from ${package_spec} ..."
+echo "Устанавливаем CLI novwr из ${package_spec} ..."
 uv tool install --force "$package_spec"
 export PATH="$HOME/.local/bin:$PATH"
 
 if ! command -v novwr >/dev/null 2>&1; then
-  echo "novwr CLI is not on PATH after installation." >&2
-  echo "Try adding \$HOME/.local/bin to PATH, then run novwr manually." >&2
+  echo "После установки CLI novwr не найден в PATH." >&2
+  echo "Добавьте \$HOME/.local/bin в PATH и запустите novwr вручную." >&2
   exit 1
 fi
 
@@ -129,18 +129,18 @@ fi
 
 cat <<EOF
 
-NovWr CLI installed successfully.
+CLI NovWr успешно установлен.
 
-Common commands:
+Основные команды:
   novwr init --dir "$NOVWR_HOME"
   novwr run --dir "$NOVWR_HOME"
   novwr doctor --dir "$NOVWR_HOME"
   novwr upgrade --dir "$NOVWR_HOME"
   novwr uninstall --dir "$NOVWR_HOME"
 
-Installation directory:
+Каталог установки:
   $NOVWR_HOME
 
-If OPENAI_API_KEY is still empty, edit:
+Если OPENAI_API_KEY ещё не задан, отредактируйте:
   $NOVWR_HOME/.env
 EOF

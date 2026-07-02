@@ -100,7 +100,7 @@ def build_entity_suggestion_candidates(
     language: str | None,
 ) -> dict[str, EntitySuggestionCandidate]:
     candidates: dict[str, EntitySuggestionCandidate] = {}
-    for raw, suggestion_id in zip(raw_suggestions, suggestion_ids):
+    for raw, suggestion_id in zip(raw_suggestions, suggestion_ids, strict=True):
         if raw.get("kind") != "create_entity":
             continue
         delta = raw.get("delta") or {}

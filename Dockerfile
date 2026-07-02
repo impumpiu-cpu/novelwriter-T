@@ -10,7 +10,7 @@ RUN UV_VERSION="$(tr -d '[:space:]' < .uv-version)" \
     && curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" \
       | env UV_UNMANAGED_INSTALL="/uv-bin" sh
 
-# Stage 1: Build frontend
+# Этап 1: сборка фронтенда
 FROM node:20-slim AS frontend-build
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
@@ -18,10 +18,10 @@ RUN npm ci
 COPY web/ .
 ARG VITE_API_URL=""
 ARG VITE_DEPLOY_MODE=selfhost
-# Empty VITE_API_URL -> same-origin requests (no CORS needed)
+# Пустой VITE_API_URL -> запросы к тому же origin (CORS не нужен)
 RUN VITE_API_URL="$VITE_API_URL" VITE_DEPLOY_MODE="$VITE_DEPLOY_MODE" npm run build
 
-# Stage 2: Python backend dependencies + app payload
+# Этап 2: зависимости Python-бэкенда + код приложения
 FROM python:3.13-slim AS backend-build
 COPY --from=uv-installer /uv-bin/ /usr/local/bin/
 WORKDIR /app
@@ -56,7 +56,7 @@ COPY data/common_words/ data/common_words/
 COPY data/demo/ data/demo/
 COPY data/worldpacks/ data/worldpacks/
 
-# Stage 3: Runtime image
+# Этап 3: итоговый образ
 FROM python:3.13-slim
 WORKDIR /app
 
@@ -67,9 +67,9 @@ COPY --from=backend-build /app/alembic.ini /app/alembic.ini
 COPY --from=backend-build /app/data /app/data
 COPY --from=frontend-build /web/dist/ /app/static/
 
-# Selfhost defaults to a host bind-mounted /data volume. Keep the runtime user as
-# root so first-run SQLite/bootstrap writes still succeed when the host path is
-# created by an arbitrary UID/GID outside the image.
+# В selfhost по умолчанию используется примонтированный с хоста том /data. Оставляем
+# пользователя root, чтобы первая запись SQLite/bootstrap удалась, даже если путь на
+# хосте создан с произвольным UID/GID вне образа.
 RUN mkdir -p /data
 
 ENV DEPLOY_MODE=selfhost

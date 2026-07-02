@@ -131,7 +131,7 @@ def _prepare_continuation_context(
         writer_ctx = apply_writer_context_budget(writer_ctx)
     except Exception:
         logger.exception("assemble_writer_context failed for novel %s", novel_id)
-        raise HTTPException(status_code=500, detail="Context assembly failed")
+        raise HTTPException(status_code=500, detail="Context assembly failed") from None
 
     world_context = format_world_context_for_prompt(writer_ctx, locale=novel_language)
     narrative_constraints = extract_narrative_constraints(writer_ctx)

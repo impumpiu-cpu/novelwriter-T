@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: 2026 Isaac.X.Ω.Yuan
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""
-Generator utilities for continuation and outline generation.
+"""Движок генерации продолжений и планов.
 
-This module provides:
-1. Lorebook context injection
-2. Multi-model routing support
+Конвейер продолжения:
+1. Сборка промпта: последние N глав контекста + точечная инъекция сеттинга
+   через LoreManager (в контекст попадают только упомянутые сущности).
+2. Вызов LLM через ``ai_client`` (потоковый NDJSON или обычный ответ),
+   параллельная генерация нескольких версий.
+3. Постобработка: удаление блоков рассуждений модели, обрезка по границе
+   предложения с учётом языка романа.
 """
 
 from typing import AsyncGenerator, List

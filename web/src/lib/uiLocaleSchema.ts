@@ -1,8 +1,9 @@
-export const SUPPORTED_UI_LOCALES = ['zh', 'en'] as const
+// Поддерживаемые локали интерфейса; русский — локаль по умолчанию.
+export const SUPPORTED_UI_LOCALES = ['ru', 'zh', 'en'] as const
 
 export type UiLocale = (typeof SUPPORTED_UI_LOCALES)[number]
 
-export const DEFAULT_UI_LOCALE: UiLocale = 'zh'
+export const DEFAULT_UI_LOCALE: UiLocale = 'ru'
 
 type UiLocaleDefinition = {
   aliases: readonly string[]
@@ -12,6 +13,12 @@ type UiLocaleDefinition = {
 }
 
 const UI_LOCALE_DEFINITIONS = {
+  ru: {
+    aliases: ['ru', 'ru-ru', 'ru-by', 'ru-kz', 'ru-ua'],
+    documentLang: 'ru',
+    intlLocale: 'ru-RU',
+    fallbackChain: ['ru', 'en', 'zh'],
+  },
   zh: {
     aliases: ['zh', 'zh-cn', 'zh-hans', 'zh-sg'],
     documentLang: 'zh-CN',

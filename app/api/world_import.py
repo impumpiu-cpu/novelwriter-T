@@ -27,7 +27,7 @@ def import_worldpack_v1(
     try:
         result = import_worldpack_payload(novel_id=novel_id, body=body, db=db)
     except WorldpackImportError as exc:
-        raise translate_worldpack_import_error(exc)
+        raise translate_worldpack_import_error(exc) from exc
     ensure_project_start_event(
         db,
         user_id=current_user.id,

@@ -130,7 +130,7 @@ async def import_character_card(
     try:
         card = parse_character_card(content, file.filename)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     name = card.get("name", "").strip()
     if not name:

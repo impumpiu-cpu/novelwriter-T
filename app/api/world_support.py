@@ -76,9 +76,9 @@ def run_world_operation(operation: Callable[..., _T], /, *args, **kwargs) -> _T:
             status_code=exc.status_code,
             detail=exc.detail,
             headers=getattr(exc, "headers", None),
-        )
+        ) from exc
     except (WorldCrudError, WorldUseCaseError) as exc:
-        raise translate_world_operation_error(exc)
+        raise translate_world_operation_error(exc) from exc
 
 
 async def run_world_operation_async(operation: Callable[..., object], /, *args, **kwargs):
@@ -89,9 +89,9 @@ async def run_world_operation_async(operation: Callable[..., object], /, *args, 
             status_code=exc.status_code,
             detail=exc.detail,
             headers=getattr(exc, "headers", None),
-        )
+        ) from exc
     except (WorldCrudError, WorldUseCaseError) as exc:
-        raise translate_world_operation_error(exc)
+        raise translate_world_operation_error(exc) from exc
 
 
 def request_payload(body: Any, *, exclude_none: bool = False) -> dict[str, Any]:

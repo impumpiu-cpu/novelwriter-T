@@ -1,6 +1,16 @@
 # SPDX-FileCopyrightText: 2026 Isaac.X.Ω.Yuan
 # SPDX-License-Identifier: AGPL-3.0-only
 
+"""Точка входа веб-сервера FastAPI.
+
+Отвечает за:
+- проверку критичных настроек безопасности при старте (JWT-секрет, режим развёртывания);
+- подключение всех API-роутеров (``app/api/*``), CORS и лимитера запросов;
+- логирование каждого запроса с идентификатором ``X-Request-ID``;
+- health-эндпоинты (``/api/health``, ``/api/health/access``);
+- раздачу собранного фронтенда (SPA) со fallback'ом на ``index.html``.
+"""
+
 import os
 from pathlib import Path as _Path
 
@@ -76,9 +86,10 @@ def _validate_startup_security_settings(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Жизненный цикл приложения: валидация настроек, логирование, инициализация БД."""
     global _start_time
     _start_time = time.time()
-    # Force reload settings from .env on server start/reload
+    # Принудительно перечитываем настройки из .env при старте/перезапуске сервера
     from app.config import reload_settings
     settings = reload_settings()
     _validate_startup_security_settings(
@@ -348,7 +359,7 @@ async def debug_settings(admin: User = Depends(require_admin)):
     }
 
 
-# Serve frontend static files (SPA fallback: non-/api paths → index.html)
+# Раздача статики фронтенда (SPA-fallback: пути вне /api → index.html)
 _static_dir = _Path(__file__).parent.parent / "static"
 if _static_dir.is_dir():
     _mount_spa_static_files(app, static_dir=_static_dir)
