@@ -5,6 +5,7 @@ import { useToast } from '@/components/world-model/shared/useToast'
 import { useUiLocale } from '@/contexts/UiLocaleContext'
 import { Button } from '@/components/ui/button'
 import { renderWarningMessage } from '@/lib/warningMessages'
+import type { UiLocale } from '@/lib/uiMessages'
 import type { WorldpackImportCounts, WorldpackImportResponse, WorldpackImportWarning, WorldpackV1 } from '@/types/api'
 
 type WorldpackPanelVariant = 'page' | 'sidebar'
@@ -50,7 +51,7 @@ function summarizeBucket(
   return { total, detail }
 }
 
-function formatWarning(w: WorldpackImportWarning, locale: 'zh' | 'en'): string {
+function formatWarning(w: WorldpackImportWarning, locale: UiLocale): string {
   const rendered = renderWarningMessage(w, locale)
   const base = w.code ? `[${w.code}] ${rendered}` : rendered
   return w.path ? `${base} (${w.path})` : base

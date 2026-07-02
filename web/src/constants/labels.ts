@@ -113,6 +113,14 @@ export const LABELS = {
   // Display helpers
   ENTITY_TYPE_LABEL: (entityType: string, locale: UiLocale = currentLocale()) => {
     const table: Record<UiLocale, Record<string, string>> = {
+      ru: {
+        Character: 'Персонаж',
+        Location: 'Место',
+        Faction: 'Фракция',
+        Concept: 'Концепция',
+        Vehicle: 'Транспорт',
+        Item: 'Предмет',
+      },
       zh: {
         Character: '角色',
         Location: '地点',

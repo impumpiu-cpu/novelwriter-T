@@ -2,7 +2,7 @@ from __future__ import annotations
 
 DEFAULT_LANGUAGE = "zh"
 DEFAULT_COPILOT_INTERACTION_LOCALE = "zh"
-SUPPORTED_COPILOT_INTERACTION_LOCALES = ("zh", "en")
+SUPPORTED_COPILOT_INTERACTION_LOCALES = ("zh", "en", "ru")
 
 
 def normalize_language_code(value: str | None, *, default: str | None = DEFAULT_LANGUAGE) -> str | None:

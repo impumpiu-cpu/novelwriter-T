@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { useWorldEntities, useCreateEntity, useConfirmEntities, useRejectEntities } from '@/hooks/world/useEntities'
 import { LABELS } from '@/constants/labels'
 import { useUiLocale } from '@/contexts/UiLocaleContext'
+import type { UiLocale } from '@/lib/uiMessages'
 import type { WorldEntity } from '@/types/api'
 
 export function EntityNavigator({ novelId, selectedEntityId, onSelectEntity, bottomSlot }: {
@@ -150,7 +151,7 @@ export function EntityNavigator({ novelId, selectedEntityId, onSelectEntity, bot
 
 function EntityRow({ entity, locale, selected, onClick, onConfirm, onReject }: {
   entity: WorldEntity
-  locale: 'zh' | 'en'
+  locale: UiLocale
   selected: boolean
   onClick: () => void
   onConfirm?: () => void

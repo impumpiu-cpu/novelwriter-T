@@ -1,6 +1,7 @@
 import { Languages, Moon, Sun } from "lucide-react"
 import { useTheme } from "@/hooks/useTheme"
 import { useUiLocale } from "@/contexts/UiLocaleContext"
+import { SUPPORTED_UI_LOCALES } from "@/lib/uiLocale"
 import { cn } from "@/lib/utils"
 
 export function AppearanceCard() {
@@ -60,38 +61,25 @@ export function AppearanceCard() {
             </div>
 
             <div className="flex gap-4">
-                <button
-                    type="button"
-                    aria-pressed={locale === 'zh'}
-                    onClick={() => setLocale('zh')}
-                    className={cn(
-                        "flex-1 h-[84px] rounded-xl flex flex-col items-center justify-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                        locale === 'zh'
-                            ? "bg-accent/[0.08] border-2 border-accent text-accent"
-                            : "bg-[var(--nw-glass-bg)] border border-[var(--nw-glass-border)] text-muted-foreground hover:border-[var(--nw-glass-border-hover)]"
-                    )}
-                >
-                    <span className={cn("text-[13px]", locale === 'zh' ? "font-semibold" : "font-normal")}>
-                        {t('settings.appearance.language.zh')}
-                    </span>
-                    <span className="text-xs opacity-80">zh</span>
-                </button>
-                <button
-                    type="button"
-                    aria-pressed={locale === 'en'}
-                    onClick={() => setLocale('en')}
-                    className={cn(
-                        "flex-1 h-[84px] rounded-xl flex flex-col items-center justify-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                        locale === 'en'
-                            ? "bg-accent/[0.08] border-2 border-accent text-accent"
-                            : "bg-[var(--nw-glass-bg)] border border-[var(--nw-glass-border)] text-muted-foreground hover:border-[var(--nw-glass-border-hover)]"
-                    )}
-                >
-                    <span className={cn("text-[13px]", locale === 'en' ? "font-semibold" : "font-normal")}>
-                        {t('settings.appearance.language.en')}
-                    </span>
-                    <span className="text-xs opacity-80">en</span>
-                </button>
+                {SUPPORTED_UI_LOCALES.map((supportedLocale) => (
+                    <button
+                        key={supportedLocale}
+                        type="button"
+                        aria-pressed={locale === supportedLocale}
+                        onClick={() => setLocale(supportedLocale)}
+                        className={cn(
+                            "flex-1 h-[84px] rounded-xl flex flex-col items-center justify-center gap-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                            locale === supportedLocale
+                                ? "bg-accent/[0.08] border-2 border-accent text-accent"
+                                : "bg-[var(--nw-glass-bg)] border border-[var(--nw-glass-border)] text-muted-foreground hover:border-[var(--nw-glass-border-hover)]"
+                        )}
+                    >
+                        <span className={cn("text-[13px]", locale === supportedLocale ? "font-semibold" : "font-normal")}>
+                            {t(`settings.appearance.language.${supportedLocale}`)}
+                        </span>
+                        <span className="text-xs opacity-80">{supportedLocale}</span>
+                    </button>
+                ))}
             </div>
         </div>
     )

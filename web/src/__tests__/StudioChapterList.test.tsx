@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { UiLocaleProvider } from '@/contexts/UiLocaleContext'
@@ -13,6 +13,12 @@ function renderList(ui: React.ReactElement) {
 }
 
 describe('StudioChapterList', () => {
+  beforeEach(() => {
+    // Тесты проверяют китайские строки интерфейса — фиксируем локаль zh.
+    localStorage.setItem('novwr_ui_locale', 'zh')
+    document.documentElement.lang = 'zh-CN'
+  })
+
   const chapters = [
     { chapterNumber: 1, label: '第 1 章' },
     { chapterNumber: 2, label: '第 2 章' },

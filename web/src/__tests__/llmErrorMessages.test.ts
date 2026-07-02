@@ -9,7 +9,7 @@ describe('llmErrorMessages', () => {
       detail: { code: 'llm_config_incomplete' },
     })
 
-    expect(getLlmApiErrorMessage(err)).toContain('BYOK 配置不完整')
+    expect(getLlmApiErrorMessage(err)).toContain('конфигурация BYOK неполна')
   })
 
   it('maps operator disable to explicit copy', () => {
@@ -18,7 +18,7 @@ describe('llmErrorMessages', () => {
       detail: { code: 'ai_manually_disabled' },
     })
 
-    expect(getLlmApiErrorMessage(err)).toContain('已关闭 AI 功能')
+    expect(getLlmApiErrorMessage(err)).toContain('функции ИИ отключены')
   })
 
   it('maps duplicate-click admission errors to actionable copy', () => {
@@ -31,14 +31,14 @@ describe('llmErrorMessages', () => {
       detail: { code: 'bootstrap_index_already_fresh' },
     })
 
-    expect(getLlmApiErrorMessage(continuationErr)).toContain('已经在处理中')
-    expect(getLlmApiErrorMessage(bootstrapErr)).toContain('已经是最新状态')
+    expect(getLlmApiErrorMessage(continuationErr)).toContain('уже обрабатывается')
+    expect(getLlmApiErrorMessage(bootstrapErr)).toContain('уже актуален')
   })
 
   it('warns when the current BYOK config is partial', () => {
     expect(
       getLlmConfigWarning({ baseUrl: 'https://example.com/v1', apiKey: '', model: '' }),
-    ).toContain('只填写了部分 BYOK 配置')
+    ).toContain('только часть конфигурации BYOK')
     expect(
       getLlmConfigWarning({ baseUrl: 'https://example.com/v1', apiKey: 'k', model: 'm' }),
     ).toBeNull()

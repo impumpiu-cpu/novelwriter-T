@@ -94,6 +94,9 @@ describe('WorldBuildPanel', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks()
+    // Тесты проверяют китайские строки интерфейса — фиксируем локаль zh.
+    localStorage.setItem('novwr_ui_locale', 'zh')
+    document.documentElement.lang = 'zh-CN'
     mockUseTriggerBootstrap.mockReturnValue({ mutate: mutateFn, isPending: false })
     mockUseNovelWindowIndex.mockReturnValue({
       data: { status: 'missing', revision: 0, built_revision: null, error: null, job: null },

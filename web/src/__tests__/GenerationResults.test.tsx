@@ -64,6 +64,9 @@ describe('ContinuationResultsStage runtime', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     sessionStorage.clear()
+    // Тесты проверяют китайские строки интерфейса — фиксируем локаль zh.
+    localStorage.setItem('novwr_ui_locale', 'zh')
+    document.documentElement.lang = 'zh-CN'
 
     mockUseAuth.mockReturnValue({
       user: { feedback_submitted: false },

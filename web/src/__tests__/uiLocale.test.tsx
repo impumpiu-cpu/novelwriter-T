@@ -51,17 +51,18 @@ describe('ui locale foundation', () => {
   })
 
   it('uses the locale manifest fallback chain for translations', () => {
-    expect(getUiLocaleFallbackChain('en')).toEqual(['en', 'zh'])
-    expect(getUiLocaleFallbackChain('zh')).toEqual(['zh'])
+    expect(getUiLocaleFallbackChain('ru')).toEqual(['ru', 'en', 'zh'])
+    expect(getUiLocaleFallbackChain('en')).toEqual(['en', 'zh', 'ru'])
+    expect(getUiLocaleFallbackChain('zh')).toEqual(['zh', 'ru'])
   })
 
-  it('falls back to zh when localStorage.getItem throws', () => {
+  it('falls back to ru when localStorage.getItem throws', () => {
     document.documentElement.lang = ''
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
       throw new DOMException('denied', 'SecurityError')
     })
 
-    expect(resolveInitialUiLocale()).toBe('zh')
+    expect(resolveInitialUiLocale()).toBe('ru')
   })
 
   it('syncs document.lang and persists the selected locale across remounts', async () => {
