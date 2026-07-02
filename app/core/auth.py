@@ -565,7 +565,7 @@ def get_current_user(
         if username is None:
             raise credentials_exc
     except jwt.PyJWTError:
-        raise credentials_exc
+        raise credentials_exc from None
 
     user = db.query(User).filter(User.username == username).first()
     if user is None or not user.is_active:

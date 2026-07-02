@@ -78,7 +78,7 @@ def get_continuations(
     try:
         wanted = [int(p) for p in parts]
     except ValueError:
-        raise HTTPException(status_code=400, detail="ids must be a comma-separated list of integers")
+        raise HTTPException(status_code=400, detail="ids must be a comma-separated list of integers") from None
     if len(wanted) > 10:
         raise HTTPException(status_code=400, detail="Too many ids")
 

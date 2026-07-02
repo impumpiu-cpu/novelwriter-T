@@ -538,7 +538,7 @@ async def handle_continue_request(
             error_code="continuation_generation_failed",
             error_message="Continuation generation failed",
         )
-        raise HTTPException(status_code=500, detail="Continuation generation failed")
+        raise HTTPException(status_code=500, detail="Continuation generation failed") from None
     finally:
         if quota_reserved:
             quota.finalize()

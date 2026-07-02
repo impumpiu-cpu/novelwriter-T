@@ -162,7 +162,7 @@ def create_chapter(
                 raise HTTPException(
                     status_code=409,
                     detail="Chapter number conflict; please retry",
-                )
+                ) from None
 
             db.refresh(chapter)
             record_event(db, current_user.id, "chapter_save", novel_id=novel_id, meta={"chapter": chapter_number})
@@ -177,7 +177,7 @@ def create_chapter(
         .first()
     )
     if existing:
-        raise HTTPException(status_code=409, detail=f"Chapter {chapter_number} already exists")
+        raise HTTPException(status_code=409, detail=f"Chapter {chapter_number} already exists") from None
 
     chapter = Chapter(
         novel_id=novel_id,
@@ -198,7 +198,7 @@ def create_chapter(
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail=f"Chapter {chapter_number} already exists")
+        raise HTTPException(status_code=409, detail=f"Chapter {chapter_number} already exists") from None
 
     db.refresh(chapter)
     record_event(db, current_user.id, "chapter_save", novel_id=novel_id, meta={"chapter": chapter_number})
