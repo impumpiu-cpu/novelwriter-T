@@ -120,6 +120,7 @@ export const LABELS = {
         Concept: 'Концепция',
         Vehicle: 'Транспорт',
         Item: 'Предмет',
+        Plot: 'Сюжетная линия',
       },
       zh: {
         Character: '角色',
@@ -128,6 +129,7 @@ export const LABELS = {
         Concept: '概念',
         Vehicle: '载具',
         Item: '物品',
+        Plot: '剧情线',
       },
       en: {
         Character: 'Character',
@@ -136,6 +138,7 @@ export const LABELS = {
         Concept: 'Concept',
         Vehicle: 'Vehicle',
         Item: 'Item',
+        Plot: 'Plot line',
       },
     }
     return table[locale][entityType] ?? entityType

@@ -17,7 +17,7 @@ from app.version import APP_VERSION
 
 
 DEFAULT_INSTALL_DIR = Path.home() / ".novwr"
-DEFAULT_IMAGE = "ghcr.io/hurricane0698/novelwriter:latest"
+DEFAULT_IMAGE = "ghcr.io/impumpiu-cpu/novelwriter-t:latest"
 DEFAULT_BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = "8000"
 DEFAULT_DATA_DIR = "./data"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NOVWR_REPO_URL="${NOVWR_REPO_URL:-https://github.com/Hurricane0698/novelwriter.git}"
+NOVWR_REPO_URL="${NOVWR_REPO_URL:-https://github.com/impumpiu-cpu/novelwriter-T.git}"
 NOVWR_INSTALL_REF="${NOVWR_INSTALL_REF:-}"
 NOVWR_PACKAGE_SPEC="${NOVWR_PACKAGE_SPEC:-}"
 NOVWR_UV_VERSION="${NOVWR_UV_VERSION:-}"

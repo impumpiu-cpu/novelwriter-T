@@ -6,19 +6,29 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - scngs-data:/data
+    # Конфигурация LLM (OPENAI_* / LLM_PROVIDER / OLLAMA_*) читается из .env.
+    env_file:
+      - .env
     environment:
       - DEPLOY_MODE=selfhost
       - DATABASE_URL=sqlite:////data/scngs.db
       - SCNGS_DATA_DIR=/data
+    extra_hosts:
+      # Доступ к сервисам хоста (например, Ollama на localhost:11434) из контейнера.
+      - "host.docker.internal:host-gateway"
   scngs-worker:
     build: .
     command: ["sh", "-c", "python -m app.selfhost_db_bootstrap && python -m app.workers.background_jobs"]
     volumes:
       - scngs-data:/data
+    env_file:
+      - .env
     environment:
       - DEPLOY_MODE=selfhost
       - DATABASE_URL=sqlite:////data/scngs.db
       - SCNGS_DATA_DIR=/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - scngs
 volumes:

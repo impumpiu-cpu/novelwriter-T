@@ -1,5 +1,7 @@
+import datetime as _datetime
 import os
 import logging
+import sqlite3
 from pathlib import Path
 from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -15,7 +17,26 @@ if not DATABASE_URL:
 
 _is_sqlite = DATABASE_URL.startswith("sqlite")
 
+
+def _register_sqlite_datetime_adapters() -> None:
+    """Явные адаптеры/конвертеры datetime для sqlite3.
+
+    Встроенные адаптеры sqlite3 объявлены устаревшими с Python 3.12
+    (DeprecationWarning); регистрируем эквиваленты в формате ISO 8601,
+    чтобы поведение не изменилось, когда их удалят.
+    """
+    sqlite3.register_adapter(_datetime.date, lambda value: value.isoformat())
+    sqlite3.register_adapter(_datetime.datetime, lambda value: value.isoformat(sep=" "))
+    sqlite3.register_converter(
+        "date", lambda value: _datetime.date.fromisoformat(value.decode("ascii"))
+    )
+    sqlite3.register_converter(
+        "timestamp", lambda value: _datetime.datetime.fromisoformat(value.decode("ascii"))
+    )
+
+
 if _is_sqlite:
+    _register_sqlite_datetime_adapters()
     engine = create_engine(
         DATABASE_URL,
         connect_args={"check_same_thread": False},
@@ -30,7 +51,9 @@ if _is_sqlite:
         cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
 else:
-    engine = create_engine(DATABASE_URL, pool_size=5, max_overflow=10)
+    # pool_pre_ping отсеивает мёртвые соединения (перезапуск PostgreSQL,
+    # обрыв по тайм-ауту) до выдачи их из пула.
+    engine = create_engine(DATABASE_URL, pool_size=5, max_overflow=10, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

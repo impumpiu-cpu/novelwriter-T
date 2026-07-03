@@ -112,7 +112,7 @@ PromptKey.CONTINUATION: """<novel_info>
 
 要件：
 1) エンティティ名はできるだけ原文を使用し、簡潔かつ一意にする。
-2) entity_type は簡潔な英語カテゴリを使用（例：Character/Location/Faction/Item/Concept/Organization/Vehicle）。不確かな場合はConceptを使用。
+2) entity_type は簡潔な英語カテゴリを使用（例：Character/Location/Faction/Item/Concept/Organization/Vehicle/Plot）。不確かな場合はConceptを使用。
 3) 関係のlabelは短い説明的フレーズで表現する。labelの末尾に「関係」を付けない。
 4) 関係がentitiesリストに存在しないエンティティを参照する場合、その関係は出力しない。
 5) systems.display_type の選択ルール：

@@ -69,9 +69,20 @@ class Settings(BaseSettings):
 
     deploy_mode: Literal["hosted", "selfhost"] = "selfhost"
 
+    # Выбор LLM-провайдера для selfhost: "openai" — любой OpenAI-совместимый
+    # эндпоинт (по умолчанию), "ollama" — локальный сервер Ollama через его
+    # OpenAI-совместимый API (/v1).
+    llm_provider: Literal["openai", "ollama"] = "openai"
+
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
+
+    # Ollama (используется при llm_provider="ollama")
+    ollama_base_url: str = "http://localhost:11434/v1"
+    ollama_model: str = "llama3.1:8b"
+    # Ollama не проверяет ключ, но OpenAI SDK требует непустое значение.
+    ollama_api_key: str = "ollama"
 
     db_auto_create: bool = False
 
@@ -182,6 +193,32 @@ class Settings(BaseSettings):
     @property
     def normalized_environment(self) -> str:
         return (self.environment or "dev").strip().lower()
+
+    @field_validator("ollama_base_url")
+    @classmethod
+    def _normalize_ollama_base_url(cls, value: str) -> str:
+        # Пользователи часто указывают адрес Ollama без суффикса /v1
+        # (http://localhost:11434); OpenAI-совместимый API живёт под /v1.
+        normalized = str(value or "").strip().rstrip("/")
+        if not normalized:
+            return "http://localhost:11434/v1"
+        if not normalized.endswith("/v1"):
+            normalized = f"{normalized}/v1"
+        return normalized
+
+    @property
+    def selfhost_llm_base_url(self) -> str:
+        return self.ollama_base_url if self.llm_provider == "ollama" else self.openai_base_url
+
+    @property
+    def selfhost_llm_api_key(self) -> str:
+        if self.llm_provider == "ollama":
+            return self.ollama_api_key or "ollama"
+        return self.openai_api_key
+
+    @property
+    def selfhost_llm_model(self) -> str:
+        return self.ollama_model if self.llm_provider == "ollama" else self.openai_model
 
     @field_validator("hosted_invite_codes", mode="before")
     @classmethod

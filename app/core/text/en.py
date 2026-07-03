@@ -112,7 +112,7 @@ Principles:
 
 Requirements:
 1) Entity names should use the original text as much as possible — keep them short and unique.
-2) entity_type should use concise English categories (e.g. Character/Location/Faction/Item/Concept/Organization/Vehicle); if uncertain, use Concept.
+2) entity_type should use concise English categories (e.g. Character/Location/Faction/Item/Concept/Organization/Vehicle/Plot); if uncertain, use Concept.
 3) Relationship labels should be short descriptive phrases. Do not append "relationship" to the label (e.g. use "mentor" not "mentor relationship").
 4) If a relationship references an entity not present in the entities list, prefer omitting that relationship.
 5) systems.display_type selection rules:

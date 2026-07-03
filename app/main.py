@@ -222,6 +222,62 @@ def _directory_is_writable(path: _Path) -> bool:
     return path.is_dir() and os.access(path, os.W_OK)
 
 
+# Невзятая задача старше этого порога — признак остановившегося worker'а.
+_JOB_QUEUE_STALLED_AFTER_SECONDS = 300
+
+
+def _probe_job_queue() -> dict[str, object]:
+    """Возраст самой старой невзятой фоновой задачи (раннее обнаружение стоящего worker'а)."""
+    try:
+        from datetime import datetime, timezone
+
+        from app.database import SessionLocal
+        from app.models import BootstrapJob, DerivedAssetJob, NovelIngestJob
+
+        waiting_filters = (
+            (NovelIngestJob, NovelIngestJob.status == "queued"),
+            (DerivedAssetJob, DerivedAssetJob.status == "queued"),
+            (BootstrapJob, BootstrapJob.status == "pending"),
+        )
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        oldest_age: float | None = None
+        queued_jobs = 0
+        db = SessionLocal()
+        try:
+            for model, status_filter in waiting_filters:
+                rows = db.query(model.created_at, model.updated_at).filter(status_filter).all()
+                queued_jobs += len(rows)
+                for created_at, updated_at in rows:
+                    queued_since = updated_at or created_at
+                    if queued_since is None:
+                        continue
+                    if queued_since.tzinfo is not None:
+                        queued_since = queued_since.astimezone(timezone.utc).replace(tzinfo=None)
+                    age = max(0.0, (now - queued_since).total_seconds())
+                    if oldest_age is None or age > oldest_age:
+                        oldest_age = age
+        finally:
+            db.close()
+
+        stalled = oldest_age is not None and oldest_age >= _JOB_QUEUE_STALLED_AFTER_SECONDS
+        return {
+            "critical": False,
+            "ready": not stalled,
+            "queued_jobs": queued_jobs,
+            "oldest_queued_job_age_seconds": round(oldest_age, 1) if oldest_age is not None else None,
+            "stalled_after_seconds": _JOB_QUEUE_STALLED_AFTER_SECONDS,
+        }
+    except Exception:
+        logger.warning("job queue health probe failed", exc_info=True)
+        return {
+            "critical": False,
+            "ready": False,
+            "queued_jobs": None,
+            "oldest_queued_job_age_seconds": None,
+            "stalled_after_seconds": _JOB_QUEUE_STALLED_AFTER_SECONDS,
+        }
+
+
 def _build_access_health_report(*, static_dir: _Path | None) -> dict[str, object]:
     settings = _get_settings()
     db_ok = _probe_database_connection()
@@ -287,6 +343,7 @@ def _build_access_health_report(*, static_dir: _Path | None) -> dict[str, object
             "ready": settings.enable_event_tracking,
             "event_tracking_enabled": settings.enable_event_tracking,
         },
+        "job_queue": _probe_job_queue(),
     }
     critical_failures = [name for name, check in checks.items() if check.get("critical") and not check.get("ready")]
 

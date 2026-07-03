@@ -47,6 +47,58 @@ def test_get_config_strips_chat_completions(mock_settings):
 
 
 @patch("app.core.ai_client.get_settings")
+def test_get_config_uses_ollama_settings_when_provider_is_ollama(mock_settings):
+    s = MagicMock(
+        deploy_mode="selfhost",
+        llm_provider="ollama",
+        ollama_base_url="http://localhost:11434/v1",
+        ollama_api_key="ollama",
+        ollama_model="llama3.1:8b",
+        openai_base_url="https://api.openai.com/v1",
+        openai_api_key="sk-test",
+        openai_model="gpt-4o",
+    )
+    mock_settings.return_value = s
+    c = AIClient()
+    cfg = c._get_config()
+    assert cfg["base_url"] == "http://localhost:11434/v1"
+    assert cfg["api_key"] == "ollama"
+    assert cfg["model"] == "llama3.1:8b"
+
+
+@patch("app.core.ai_client.get_settings")
+def test_get_config_ollama_provider_substitutes_placeholder_api_key(mock_settings):
+    s = MagicMock(
+        deploy_mode="selfhost",
+        llm_provider="ollama",
+        ollama_base_url="http://localhost:11434/v1",
+        ollama_api_key="",
+        ollama_model="qwen2.5:7b",
+    )
+    mock_settings.return_value = s
+    c = AIClient()
+    cfg = c._get_config()
+    assert cfg["api_key"] == "ollama"
+
+
+@patch("app.core.ai_client.get_settings")
+def test_get_config_hosted_mode_ignores_ollama_provider(mock_settings):
+    s = MagicMock(
+        deploy_mode="hosted",
+        llm_provider="ollama",
+        hosted_llm_base_url="https://gateway.example.com/v1",
+        hosted_llm_api_key="hosted-key",
+        hosted_llm_model="hosted-model",
+    )
+    mock_settings.return_value = s
+    c = AIClient()
+    cfg = c._get_config()
+    assert cfg["base_url"] == "https://gateway.example.com/v1"
+    assert cfg["api_key"] == "hosted-key"
+    assert cfg["model"] == "hosted-model"
+
+
+@patch("app.core.ai_client.get_settings")
 def test_get_config_prefers_hosted_llm_settings_in_hosted_mode(mock_settings):
     s = MagicMock(
         deploy_mode="hosted",

@@ -28,7 +28,7 @@ function SortableAttributeRow({ novelId, entityId, attribute }: {
   )
 }
 
-const COMMON_TYPES = ['Character', 'Location', 'Faction', 'Concept', 'Vehicle', 'Item']
+const COMMON_TYPES = ['Character', 'Location', 'Faction', 'Concept', 'Vehicle', 'Item', 'Plot']
 
 export function EntityDetail({ novelId, entityId, onDeleted, allowDelete = true, copilotSurface, copilotStage }: {
   novelId: number
