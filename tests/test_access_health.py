@@ -78,6 +78,94 @@ def test_access_health_endpoint_reports_hosted_access_contract(tmp_path, monkeyp
     assert payload["checks"]["monitoring"]["ready"] is False
 
 
+def _make_memory_session_factory():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    import app.database as database_mod
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    database_mod.Base.metadata.create_all(bind=engine)
+    return sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def test_job_queue_probe_reports_empty_queue_as_ready(monkeypatch):
+    import app.database as database_mod
+    import app.main as main_mod
+
+    monkeypatch.setattr(database_mod, "SessionLocal", _make_memory_session_factory())
+
+    result = main_mod._probe_job_queue()
+
+    assert result["critical"] is False
+    assert result["ready"] is True
+    assert result["queued_jobs"] == 0
+    assert result["oldest_queued_job_age_seconds"] is None
+
+
+def test_job_queue_probe_flags_stale_queued_jobs(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    import app.database as database_mod
+    import app.main as main_mod
+    from app.models import Novel, NovelIngestJob
+
+    session_factory = _make_memory_session_factory()
+    monkeypatch.setattr(database_mod, "SessionLocal", session_factory)
+
+    db = session_factory()
+    try:
+        novel = Novel(title="queued-novel", file_path="queued-novel.txt")
+        db.add(novel)
+        db.commit()
+        stale_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=3600)
+        db.add(
+            NovelIngestJob(
+                novel_id=novel.id,
+                status="queued",
+                created_at=stale_time,
+                updated_at=stale_time,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    result = main_mod._probe_job_queue()
+
+    assert result["ready"] is False
+    assert result["queued_jobs"] == 1
+    assert result["oldest_queued_job_age_seconds"] >= 3600 - 60
+
+
+def test_access_health_report_includes_job_queue_check(tmp_path, monkeypatch):
+    import app.config as config_mod
+    import app.main as main_mod
+    from app.api import novels as novels_api
+    from app.config import Settings
+
+    static_dir = _build_static_dir(tmp_path)
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+
+    config_mod._settings_instance = Settings(deploy_mode="selfhost", _env_file=None)
+    monkeypatch.setattr(main_mod, "_probe_database_connection", lambda: True)
+    monkeypatch.setattr(novels_api, "UPLOAD_DIR", upload_dir)
+
+    report = main_mod._build_access_health_report(static_dir=static_dir)
+
+    job_queue = report["checks"]["job_queue"]
+    assert job_queue["critical"] is False
+    assert "queued_jobs" in job_queue
+    assert "oldest_queued_job_age_seconds" in job_queue
+    assert job_queue["stalled_after_seconds"] == 300
+
+
 def test_health_endpoints_report_current_app_version(monkeypatch):
     import app.main as main_mod
     from app.main import app

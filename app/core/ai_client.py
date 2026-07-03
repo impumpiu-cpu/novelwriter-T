@@ -210,10 +210,15 @@ class AIClient:
         """Get API configuration from runtime settings."""
         _ = role
         settings = self.settings
+        provider = str(getattr(settings, "llm_provider", "") or "").strip().lower()
         if settings.deploy_mode == "hosted":
             base_url = settings.hosted_llm_base_url or settings.openai_base_url
             api_key = settings.hosted_llm_api_key or settings.openai_api_key
             model = settings.hosted_llm_model or settings.openai_model
+        elif provider == "ollama":
+            base_url = settings.ollama_base_url
+            api_key = settings.ollama_api_key or "ollama"
+            model = settings.ollama_model
         else:
             base_url = settings.openai_base_url
             api_key = settings.openai_api_key

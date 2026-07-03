@@ -34,10 +34,15 @@ def _auto_bootstrap_llm_ready(settings: Settings) -> bool:
         return False
 
     deploy_mode = str(getattr(settings, "deploy_mode", "") or "").strip().lower()
+    provider = str(getattr(settings, "llm_provider", "") or "").strip().lower()
     if deploy_mode == "hosted":
         base_url = getattr(settings, "hosted_llm_base_url", None) or getattr(settings, "openai_base_url", None)
         api_key = getattr(settings, "hosted_llm_api_key", None) or getattr(settings, "openai_api_key", None)
         model = getattr(settings, "hosted_llm_model", None) or getattr(settings, "openai_model", None)
+    elif provider == "ollama":
+        base_url = getattr(settings, "ollama_base_url", None)
+        api_key = getattr(settings, "ollama_api_key", None) or "ollama"
+        model = getattr(settings, "ollama_model", None)
     else:
         base_url = getattr(settings, "openai_base_url", None)
         api_key = getattr(settings, "openai_api_key", None)

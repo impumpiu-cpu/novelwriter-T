@@ -112,7 +112,7 @@ PromptKey.CONTINUATION: """<novel_info>
 
 요건:
 1) 엔티티 이름은 가능한 원문 그대로 사용하고, 간결하고 고유하게 유지할 것.
-2) entity_type은 간결한 영어 카테고리 사용(예: Character/Location/Faction/Item/Concept/Organization/Vehicle). 불확실하면 Concept 사용.
+2) entity_type은 간결한 영어 카테고리 사용(예: Character/Location/Faction/Item/Concept/Organization/Vehicle/Plot). 불확실하면 Concept 사용.
 3) 관계 label은 짧은 설명적 구문으로 표현. label 끝에 "관계"를 붙이지 말 것.
 4) 관계가 entities 목록에 없는 엔티티를 참조하면, 해당 관계를 출력하지 말 것.
 5) systems.display_type 선택 규칙:

@@ -12,6 +12,47 @@ def test_openai_model_default_starts_with_gpt():
     assert Settings.model_fields["openai_model"].default.startswith("gpt-")
 
 
+def test_llm_provider_defaults_to_openai():
+    assert Settings.model_fields["llm_provider"].default == "openai"
+
+
+def test_ollama_base_url_gets_v1_suffix_appended():
+    settings = Settings(
+        llm_provider="ollama",
+        ollama_base_url="http://localhost:11434",
+        _env_file=None,
+    )
+    assert settings.ollama_base_url == "http://localhost:11434/v1"
+    assert settings.selfhost_llm_base_url == "http://localhost:11434/v1"
+
+
+def test_ollama_base_url_keeps_existing_v1_suffix():
+    settings = Settings(
+        ollama_base_url="http://host.docker.internal:11434/v1/",
+        _env_file=None,
+    )
+    assert settings.ollama_base_url == "http://host.docker.internal:11434/v1"
+
+
+def test_selfhost_llm_properties_follow_provider_choice():
+    openai_settings = Settings(
+        openai_api_key="sk-test",
+        openai_model="gpt-4o",
+        _env_file=None,
+    )
+    assert openai_settings.selfhost_llm_api_key == "sk-test"
+    assert openai_settings.selfhost_llm_model == "gpt-4o"
+
+    ollama_settings = Settings(
+        llm_provider="ollama",
+        ollama_model="llama3.1:8b",
+        ollama_api_key="",
+        _env_file=None,
+    )
+    assert ollama_settings.selfhost_llm_model == "llama3.1:8b"
+    assert ollama_settings.selfhost_llm_api_key == "ollama"
+
+
 def test_settings_do_not_keep_unwired_provider_fields():
     model_fields = Settings.model_fields
 

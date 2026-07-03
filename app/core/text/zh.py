@@ -112,7 +112,7 @@ PromptKey.CONTINUATION: """<novel_info>
 
 要求：
 1) 实体名称尽量使用文本原文，保持简短且唯一。
-2) entity_type 使用简洁英文类别（例如 Character/Location/Faction/Item/Concept/Organization/Vehicle），不需要枚举完整；如果不确定，使用 Concept。
+2) entity_type 使用简洁英文类别（例如 Character/Location/Faction/Item/Concept/Organization/Vehicle/Plot），不需要枚举完整；如果不确定，使用 Concept。
 3) 关系 label 用简短中文短语表达，不要在 label 末尾添加"关系"二字（例如用"师父"而不是"师徒关系"）。
 4) 如果关系引用了未出现在 entities 中的实体，请宁可不输出该关系。
 5) systems.display_type 选择规则：

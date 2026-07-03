@@ -27,8 +27,8 @@
 </p>
 
 <p>
-  <a href="https://github.com/Hurricane0698/novelwriter/stargazers">
-    <img src="https://img.shields.io/github/stars/Hurricane0698/novelwriter?style=flat-square" alt="Stars" />
+  <a href="https://github.com/impumpiu-cpu/novelwriter-T/stargazers">
+    <img src="https://img.shields.io/github/stars/impumpiu-cpu/novelwriter-T?style=flat-square" alt="Stars" />
   </a>
   <a href="https://fastapi.tiangolo.com/">
     <img src="https://img.shields.io/badge/backend-FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI" />
@@ -198,12 +198,74 @@ Studio → POST /api/novels/{id}/continuations (stream)
 
 ## 🚀 Быстрый старт (Quick Start)
 
-### Установка в один клик (рекомендуется)
+> Репозиторий проекта: `impumpiu-cpu/novelwriter-T`. Требуются установленные **Docker** (с Docker Compose) и **Git**.
+
+### Установка через Docker (рекомендуется)
+
+#### Linux / macOS (bash)
+
+```bash
+git clone https://github.com/impumpiu-cpu/novelwriter-T.git
+cd novelwriter-T
+cp .env.example .env
+# отредактируйте .env и укажите конфигурацию вашего LLM
+# (OPENAI_* для OpenAI-совместимого API или LLM_PROVIDER=ollama + OLLAMA_* для локальной Ollama)
+docker compose up -d
+```
+
+#### Windows — cmd.exe (командная строка)
+
+```bat
+git clone https://github.com/impumpiu-cpu/novelwriter-T.git
+cd novelwriter-T
+copy .env.example .env
+notepad .env
+rem отредактируйте .env и сохраните, затем запустите:
+docker compose up -d
+```
+
+#### Windows — PowerShell
+
+```powershell
+git clone https://github.com/impumpiu-cpu/novelwriter-T.git
+Set-Location novelwriter-T
+Copy-Item .env.example .env
+notepad .env
+# отредактируйте .env и сохраните, затем запустите:
+docker compose up -d
+```
+
+После развёртывания откройте в браузере:
+
+```text
+http://localhost:8000
+```
+
+Остановить: `docker compose down`. Обновиться: `git pull`, затем `docker compose up -d --build`.
+
+### Использование локальной LLM через Ollama
+
+Вместо облачного API можно подключить локальный сервер [Ollama](https://ollama.com):
+
+1. Установите Ollama и загрузите модель, например: `ollama pull llama3.1:8b`
+2. В `.env` укажите:
+
+```text
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+OLLAMA_MODEL=llama3.1:8b
+```
+
+> `host.docker.internal` — адрес хоста из контейнера (проброшен в `docker-compose.yml`).
+> При локальной разработке без Docker используйте `http://localhost:11434/v1`.
+> API-ключ для Ollama не нужен (используется заглушка `OLLAMA_API_KEY=ollama`).
+
+### Альтернатива: скрипт установки в один клик (Linux / macOS)
 
 > Требуется установленный Docker; **Git не нужен**.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Hurricane0698/novelwriter/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/impumpiu-cpu/novelwriter-T/main/install.sh | bash
 ```
 
 Скрипт установки автоматически:
@@ -211,7 +273,7 @@ curl -fsSL https://raw.githubusercontent.com/Hurricane0698/novelwriter/main/inst
 - установит `uv` (если ещё не установлен)
 - установит CLI `novwr`
 - инициализирует каталог по умолчанию `~/.novwr`
-- скачает и запустит официальный Docker-образ
+- скачает и запустит Docker-образ
 
 Основные команды:
 
@@ -223,28 +285,12 @@ novwr upgrade
 novwr uninstall
 ```
 
-Каталог установки по умолчанию — `~/.novwr`. Если вы просто хотите пользоваться программой, **этого достаточно**.
-
-### Альтернатива: Docker (для тех, кто знаком с Docker)
-
-```bash
-git clone https://github.com/Hurricane0698/novelwriter.git
-cd novelwriter
-cp .env.example .env
-# отредактируйте .env и укажите конфигурацию вашего LLM API
-docker compose up -d
-```
-
-После развёртывания откройте в браузере:
-
-```text
-http://localhost:8000
-```
+Каталог установки по умолчанию — `~/.novwr`.
 
 ### Как выбрать
 
-- **Большинству пользователей**: «установка в один клик» выше
-- **Вы знакомы с Docker / хотите вручную управлять каталогами и compose**: «ручной Docker»
+- **Большинству пользователей (включая Windows)**: «установка через Docker» выше
+- **Linux/macOS без Git**: «скрипт установки в один клик»
 - **Вы собираетесь дорабатывать код**: см. «Локальная разработка» ниже
 
 ### Замечания по self-host
@@ -252,9 +298,9 @@ http://localhost:8000
 - **Режим работы**: по умолчанию запускается в режиме `selfhost`, фронтенд и бэкенд уже объединены. Из соображений безопасности по умолчанию слушается только `127.0.0.1:8000`.
 - **Фоновые задачи**: Docker Compose запускает и веб-сервис, и фоновый worker; импорт загрузок, индексация всей книги и автоматическое извлечение мира выполняются worker'ом из очереди.
 - **Инициализация**: при первом запуске система автоматически создаёт учётную запись администратора и встроенный демонстрационный проект «Путешествие на Запад».
-- **Необходимое условие**: рабочий API-ключ большой языковой модели (совместимой со стандартом OpenAI).
+- **Необходимое условие**: рабочий API-ключ большой языковой модели (совместимой со стандартом OpenAI) **или** локальный сервер Ollama (`LLM_PROVIDER=ollama`).
 - **Проверка совместимости**: на странице настроек есть «Проверить подключение» — проверка связности API, потокового ответа и поддержки JSON Mode.
-- **Официальный образ**: `ghcr.io/hurricane0698/novelwriter:latest`
+- **Docker-образ**: `ghcr.io/impumpiu-cpu/novelwriter-t:latest` (используется CLI `novwr`; при установке через `docker compose` образ собирается локально из исходников)
 
 
 
@@ -301,9 +347,13 @@ Dev-сервер фронтенда работает на `http://localhost:5173
 
 | Переменная | Обязательна | Описание |
 |---|---|---|
-| `OPENAI_API_KEY` | **Да (при включённом ИИ)** | API-ключ LLM, используемый по умолчанию в selfhost |
+| `LLM_PROVIDER` | Нет | Провайдер LLM: `openai` (по умолчанию) или `ollama` |
+| `OPENAI_API_KEY` | **Да (при `LLM_PROVIDER=openai` и включённом ИИ)** | API-ключ LLM, используемый по умолчанию в selfhost |
 | `OPENAI_BASE_URL` | Нет | Адрес OpenAI-совместимого шлюза |
 | `OPENAI_MODEL` | Нет | ID модели по умолчанию |
+| `OLLAMA_BASE_URL` | Нет | Адрес сервера Ollama (по умолчанию `http://localhost:11434/v1`; суффикс `/v1` добавляется автоматически) |
+| `OLLAMA_MODEL` | Нет | Модель Ollama (по умолчанию `llama3.1:8b`) |
+| `OLLAMA_API_KEY` | Нет | Заглушка ключа для OpenAI SDK (по умолчанию `ollama`; сервером не проверяется) |
 | `MAX_CONTEXT_CHAPTERS` | Нет | Максимум последних глав, внедряемых при продолжении |
 | `DEFAULT_CONTINUATION_TOKENS` | Нет | Лимит токенов продолжения по умолчанию |
 | `JWT_SECRET_KEY` | Обязательна в production | Ключ подписи JWT |
